@@ -1,0 +1,418 @@
+// =============================================================================
+// Nzzor — Proprietary Travel Database Schema
+// Operated by Allouni Travel Agency
+// =============================================================================
+// Design principles:
+// 1. Multilingual first — ar/fr/en on every customer-facing field
+// 2. Soft deletes via isActive flags
+// 3. Full audit trail
+// 4. Designed for Phase 2 (tours) + Phase 3 (flights) without rewriting
+// 5. Pricing snapshots at booking time — never recalculate historical prices
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// =============================================================================
+// USERS & AUTH
+// =============================================================================
+
+enum UserRole {
+  CUSTOMER
+  HOTEL_MANAGER
+  ADMIN
+  SUPER_ADMIN
+}
+
+model User {
+  id            String    @id @default(uuid())
+  email         String    @unique
+  phone         String?   @unique
+  passwordHash  String
+  role          UserRole  @default(CUSTOMER)
+
+  firstName     String?
+  lastName      String?
+  preferredLang String    @default("fr")
+
+  isActive      Boolean   @default(true)
+  emailVerified Boolean   @default(false)
+  phoneVerified Boolean   @default(false)
+  lastLoginAt   DateTime?
+
+  bookings      Booking[]
+  reviews       Review[]
+  managedHotels HotelManager[]
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([email])
+  @@index([phone])
+  @@map("users")
+}
+
+model HotelManager {
+  id      String @id @default(uuid())
+  userId  String
+  hotelId String
+
+  user    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  hotel   Hotel  @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([userId, hotelId])
+  @@map("hotel_managers")
+}
+
+// =============================================================================
+// HOTELS
+// =============================================================================
+
+model Hotel {
+  id          String  @id @default(uuid())
+  slug        String  @unique
+
+  // Multilingual content
+  nameEn      String
+  nameFr      String
+  nameAr      String
+  descEn      String  @db.Text
+  descFr      String  @db.Text
+  descAr      String  @db.Text
+
+  stars       Int
+
+  // Location
+  city        String  // Normalized: "algiers", "oran"
+  cityEn      String
+  cityFr      String
+  cityAr      String
+  regionEn    String
+  regionFr    String
+  regionAr    String
+  address     String?
+  latitude    Float?
+  longitude   Float?
+
+  // Policies
+  checkInTime       String  @default("14:00")
+  checkOutTime      String  @default("12:00")
+  cancellationHours Int     @default(48)
+  childrenAllowed   Boolean @default(true)
+  petsAllowed       Boolean @default(false)
+  parkingFree       Boolean @default(true)
+
+  // Contact
+  contactEmail  String?
+  contactPhone  String?
+  website       String?
+
+  // Aggregated ratings
+  rating        Float   @default(0)
+  reviewCount   Int     @default(0)
+
+  // Trust signals
+  instantConfirmation Boolean @default(true) // Brand promise — only hotels that commit
+  verifiedPartner     Boolean @default(true) // Allouni-verified
+
+  // Status
+  isActive      Boolean @default(true)
+  isFeatured    Boolean @default(false)
+  sortOrder     Int     @default(0)
+
+  rooms         Room[]
+  photos        HotelPhoto[]
+  amenities     HotelAmenity[]
+  bookings      Booking[]
+  reviews       Review[]
+  managers      HotelManager[]
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([city])
+  @@index([stars])
+  @@index([isActive, isFeatured])
+  @@index([slug])
+  @@map("hotels")
+}
+
+// =============================================================================
+// ROOMS & PRICING
+// =============================================================================
+
+model Room {
+  id        String @id @default(uuid())
+  hotelId   String
+
+  typeEn    String
+  typeFr    String
+  typeAr    String
+  descEn    String? @db.Text
+  descFr    String? @db.Text
+  descAr    String? @db.Text
+
+  capacity  Int
+  sizeSqm   Int?
+  bedType   String
+
+  basePrice Int     // DZD per night
+
+  totalUnits Int    @default(1)
+
+  isActive   Boolean @default(true)
+  sortOrder  Int     @default(0)
+
+  hotel      Hotel   @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  rates      RoomRate[]
+  bookings   BookingRoom[]
+  photos     RoomPhoto[]
+
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([hotelId, isActive])
+  @@map("rooms")
+}
+
+model RoomRate {
+  id        String   @id @default(uuid())
+  roomId    String
+
+  startDate DateTime @db.Date
+  endDate   DateTime @db.Date
+  price     Int
+
+  rateType  String   @default("standard") // standard, weekend, holiday, promo
+  label     String?
+
+  room      Room     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@index([roomId, startDate, endDate])
+  @@map("room_rates")
+}
+
+// =============================================================================
+// PHOTOS
+// =============================================================================
+
+model HotelPhoto {
+  id        String  @id @default(uuid())
+  hotelId   String
+  url       String
+  altEn     String?
+  altFr     String?
+  altAr     String?
+  isPrimary Boolean @default(false)
+  sortOrder Int     @default(0)
+
+  hotel     Hotel   @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@index([hotelId, sortOrder])
+  @@map("hotel_photos")
+}
+
+model RoomPhoto {
+  id        String  @id @default(uuid())
+  roomId    String
+  url       String
+  sortOrder Int     @default(0)
+
+  room      Room    @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@map("room_photos")
+}
+
+// =============================================================================
+// AMENITIES
+// =============================================================================
+
+model Amenity {
+  id       String @id @default(uuid())
+  key      String @unique
+  nameEn   String
+  nameFr   String
+  nameAr   String
+  icon     String?
+  category String  @default("general")
+
+  hotels   HotelAmenity[]
+
+  @@map("amenities")
+}
+
+model HotelAmenity {
+  id        String @id @default(uuid())
+  hotelId   String
+  amenityId String
+
+  hotel     Hotel   @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  amenity   Amenity @relation(fields: [amenityId], references: [id], onDelete: Cascade)
+
+  @@unique([hotelId, amenityId])
+  @@map("hotel_amenities")
+}
+
+// =============================================================================
+// BOOKINGS
+// =============================================================================
+
+enum BookingStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+  NO_SHOW
+  REFUNDED
+}
+
+enum PaymentMethod {
+  CIB
+  EDDAHABIA
+  CASH
+  BANK_TRANSFER
+  WHATSAPP_ASSISTED
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+model Booking {
+  id              String        @id @default(uuid())
+  reference       String        @unique  // NZR-XXXX-XXXX
+
+  userId          String?
+  guestFirstName  String
+  guestLastName   String
+  guestEmail      String
+  guestPhone      String
+  specialRequests String?       @db.Text
+
+  hotelId         String
+
+  checkIn         DateTime      @db.Date
+  checkOut        DateTime      @db.Date
+  nights          Int
+
+  // Pricing snapshot at booking time
+  subtotal        Int
+  taxes           Int           @default(0)
+  fees            Int           @default(0)
+  discount        Int           @default(0)
+  total           Int
+  currency        String        @default("DZD")
+
+  paymentMethod   PaymentMethod
+  paymentStatus   PaymentStatus @default(PENDING)
+  paidAt          DateTime?
+
+  status          BookingStatus @default(PENDING)
+  confirmedAt     DateTime?
+  cancelledAt     DateTime?
+  cancelReason    String?
+
+  source          String        @default("website")
+  lang            String        @default("fr")
+  ipAddress       String?
+  userAgent       String?
+
+  user            User?         @relation(fields: [userId], references: [id])
+  hotel           Hotel         @relation(fields: [hotelId], references: [id])
+  rooms           BookingRoom[]
+  payments        Payment[]
+
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@index([reference])
+  @@index([hotelId, checkIn, checkOut])
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("bookings")
+}
+
+model BookingRoom {
+  id            String @id @default(uuid())
+  bookingId     String
+  roomId        String
+  quantity      Int    @default(1)
+  pricePerNight Int
+
+  booking       Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  room          Room    @relation(fields: [roomId], references: [id])
+
+  @@map("booking_rooms")
+}
+
+model Payment {
+  id              String        @id @default(uuid())
+  bookingId       String
+  amount          Int
+  method          PaymentMethod
+  status          PaymentStatus @default(PENDING)
+
+  gatewayRef      String?
+  gatewayResponse String?       @db.Text
+
+  isRefund        Boolean       @default(false)
+  refundReason    String?
+
+  booking         Booking       @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  createdAt       DateTime      @default(now())
+
+  @@index([bookingId])
+  @@index([gatewayRef])
+  @@map("payments")
+}
+
+// =============================================================================
+// REVIEWS
+// =============================================================================
+
+model Review {
+  id        String  @id @default(uuid())
+  userId    String
+  hotelId   String
+
+  rating    Float   // 1-10 scale (Booking.com convention)
+  titleEn   String?
+  titleFr   String?
+  titleAr   String?
+  bodyEn    String? @db.Text
+  bodyFr    String? @db.Text
+  bodyAr    String? @db.Text
+
+  isApproved Boolean @default(false)
+  isVisible  Boolean @default(true)
+
+  user      User    @relation(fields: [userId], references: [id])
+  hotel     Hotel   @relation(fields: [hotelId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, hotelId])
+  @@index([hotelId, isVisible])
+  @@map("reviews")
+}
