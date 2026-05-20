@@ -5,6 +5,7 @@
 
 const router = require("express").Router();
 const { z } = require("zod");
+const bcrypt = require("bcryptjs");
 const prisma = require("../utils/prisma");
 const { requireAuth, requireAdmin } = require("../middleware/auth");
 const { formatHotel } = require("../utils/helpers");
@@ -261,6 +262,88 @@ router.put("/hotels/:id/amenities", async (req, res, next) => {
       skipDuplicates: true,
     });
     res.json({ message: "Amenities updated", count: amenities.length });
+  } catch (err) { next(err); }
+});
+
+// =============================================================================
+// HOTEL PARTNER USERS — create/list/remove accounts that log into /partner
+// =============================================================================
+
+// list partner users for a hotel
+router.get("/hotels/:id/managers", async (req, res, next) => {
+  try {
+    const links = await prisma.hotelManager.findMany({
+      where: { hotelId: req.params.id },
+      include: {
+        user: { select: { id: true, email: true, firstName: true, lastName: true, isActive: true, createdAt: true } },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+    res.json({ data: links.map((l) => ({ linkId: l.id, ...l.user })) });
+  } catch (err) { next(err); }
+});
+
+const partnerUserSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(6),
+  firstName: z.string().min(1).optional(),
+  lastName: z.string().min(1).optional(),
+});
+
+// create a partner user and link to this hotel (or link an existing user)
+router.post("/hotels/:id/managers", async (req, res, next) => {
+  try {
+    const data = partnerUserSchema.parse(req.body);
+    const hotel = await prisma.hotel.findUnique({ where: { id: req.params.id }, select: { id: true } });
+    if (!hotel) return res.status(404).json({ error: "Hotel not found" });
+
+    let user = await prisma.user.findUnique({ where: { email: data.email } });
+    if (user) {
+      // existing user — promote to HOTEL_MANAGER if customer, otherwise leave role
+      if (user.role === "CUSTOMER") {
+        user = await prisma.user.update({
+          where: { id: user.id },
+          data: { role: "HOTEL_MANAGER" },
+        });
+      }
+    } else {
+      const passwordHash = await bcrypt.hash(data.password, 12);
+      user = await prisma.user.create({
+        data: {
+          email: data.email,
+          passwordHash,
+          role: "HOTEL_MANAGER",
+          firstName: data.firstName || null,
+          lastName: data.lastName || null,
+        },
+      });
+    }
+
+    // link (idempotent via unique constraint)
+    try {
+      await prisma.hotelManager.create({ data: { userId: user.id, hotelId: hotel.id } });
+    } catch (e) {
+      // already linked is fine
+      if (e.code !== "P2002") throw e;
+    }
+    res.status(201).json({
+      data: {
+        id: user.id, email: user.email, firstName: user.firstName, lastName: user.lastName,
+      },
+    });
+  } catch (err) {
+    if (err.name === "ZodError") return res.status(400).json({ error: err.errors });
+    next(err);
+  }
+});
+
+// unlink a partner user from a hotel
+router.delete("/hotels/:id/managers/:userId", async (req, res, next) => {
+  try {
+    await prisma.hotelManager.deleteMany({
+      where: { hotelId: req.params.id, userId: req.params.userId },
+    });
+    res.json({ ok: true });
   } catch (err) { next(err); }
 });
 

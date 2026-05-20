@@ -47,4 +47,14 @@ function requireAdmin(req, res, next) {
   next();
 }
 
-module.exports = { requireAuth, optionalAuth, requireAdmin };
+// requires the user be either a hotel partner OR an admin (admins can see
+// any hotel's data; partners only their own — handled inside each route)
+function requirePartner(req, res, next) {
+  const role = req.user?.role;
+  if (!["HOTEL_MANAGER", "ADMIN", "SUPER_ADMIN"].includes(role)) {
+    return res.status(403).json({ error: "Hotel partner access required" });
+  }
+  next();
+}
+
+module.exports = { requireAuth, optionalAuth, requireAdmin, requirePartner };

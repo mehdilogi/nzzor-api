@@ -121,6 +121,8 @@ function formatBooking(booking, lang = "en") {
     specialRequests: booking.specialRequests,
     createdAt: booking.createdAt,
     confirmedAt: booking.confirmedAt,
+    cancelledAt: booking.cancelledAt,
+    cancellationReason: booking.cancellationReason,
   };
 }
 

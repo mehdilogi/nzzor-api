@@ -92,6 +92,21 @@ router.get("/bookings", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+router.get("/bookings/:id", async (req, res, next) => {
+  try {
+    const lang = req.query.lang || "en";
+    const booking = await prisma.booking.findUnique({
+      where: { id: req.params.id },
+      include: {
+        hotel: true,
+        rooms: { include: { room: true } },
+      },
+    });
+    if (!booking) return res.status(404).json({ error: "Booking not found" });
+    res.json({ data: formatBooking(booking, lang) });
+  } catch (err) { next(err); }
+});
+
 router.patch("/bookings/:id/status", async (req, res, next) => {
   try {
     const { status } = req.body;

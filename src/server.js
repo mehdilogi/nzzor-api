@@ -14,6 +14,7 @@ const bookingRoutes = require("./routes/bookings");
 const authRoutes = require("./routes/auth");
 const adminRoutes = require("./routes/admin");
 const adminHotelRoutes = require("./routes/adminHotels");
+const partnerRoutes = require("./routes/partner");
 const { errorHandler } = require("./middleware/errorHandler");
 
 const app = express();
@@ -46,6 +47,7 @@ app.use("/api/bookings", bookingRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/admin", adminHotelRoutes);
+app.use("/api/partner", partnerRoutes);
 
 app.get("/api/health", (req, res) => {
   res.json({
