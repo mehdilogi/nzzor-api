@@ -98,6 +98,7 @@ function formatBooking(booking, lang = "en") {
       name: localize(booking.hotel, "name", lang),
       slug: booking.hotel.slug,
       city: localize(booking.hotel, "city", lang),
+      contactPhone: booking.hotel.contactPhone || null,
     } : null,
     checkIn: booking.checkIn,
     checkOut: booking.checkOut,
