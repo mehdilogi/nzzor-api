@@ -9,8 +9,9 @@ const registerSchema = z.object({
   email: z.string().email(),
   password: z.string().min(8).max(100),
   firstName: z.string().min(1).max(100),
-  lastName: z.string().min(1).max(100),
-  phone: z.string().min(5).max(20).optional(),
+  // lastName, phone, preferredLang all optional
+  lastName: z.string().optional().nullable().transform((v) => (v && v.trim()) || null),
+  phone: z.string().min(5).max(20).optional().nullable().transform((v) => (v && v.trim()) || null),
   preferredLang: z.enum(["ar", "fr", "en"]).optional().default("fr"),
 });
 
@@ -99,6 +100,48 @@ router.get("/me", requireAuth, async (req, res) => {
     },
   });
   res.json({ data: user });
+});
+
+// PATCH /api/auth/me — update profile (name, phone, preferred language)
+const profileUpdateSchema = z.object({
+  firstName: z.string().min(1).max(100).optional(),
+  lastName: z.string().optional().nullable().transform((v) => (v && v.trim()) || null),
+  phone: z.string().min(5).max(20).optional().nullable().transform((v) => (v && v.trim()) || null),
+  preferredLang: z.enum(["ar", "fr", "en"]).optional(),
+});
+router.patch("/me", requireAuth, async (req, res, next) => {
+  try {
+    const data = profileUpdateSchema.parse(req.body);
+    const user = await prisma.user.update({
+      where: { id: req.user.id },
+      data,
+      select: { id: true, email: true, phone: true, firstName: true, lastName: true, role: true, preferredLang: true },
+    });
+    res.json({ data: user });
+  } catch (err) {
+    if (err.name === "ZodError") return res.status(400).json({ error: "Validation failed", details: err.errors });
+    next(err);
+  }
+});
+
+// POST /api/auth/me/password — change password (requires current password)
+const passwordSchema = z.object({
+  currentPassword: z.string().min(1),
+  newPassword: z.string().min(8).max(100),
+});
+router.post("/me/password", requireAuth, async (req, res, next) => {
+  try {
+    const data = passwordSchema.parse(req.body);
+    const user = await prisma.user.findUnique({ where: { id: req.user.id } });
+    const valid = await bcrypt.compare(data.currentPassword, user.passwordHash);
+    if (!valid) return res.status(401).json({ error: "Current password is incorrect" });
+    const passwordHash = await bcrypt.hash(data.newPassword, 12);
+    await prisma.user.update({ where: { id: user.id }, data: { passwordHash } });
+    res.json({ ok: true });
+  } catch (err) {
+    if (err.name === "ZodError") return res.status(400).json({ error: "Validation failed", details: err.errors });
+    next(err);
+  }
 });
 
 module.exports = router;

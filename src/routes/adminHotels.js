@@ -9,6 +9,7 @@ const bcrypt = require("bcryptjs");
 const prisma = require("../utils/prisma");
 const { requireAuth, requireAdmin } = require("../middleware/auth");
 const { formatHotel } = require("../utils/helpers");
+const { TAG_KEYS } = require("../utils/tags");
 
 router.use(requireAuth, requireAdmin);
 
@@ -52,6 +53,8 @@ const hotelSchema = z.object({
   verifiedPartner: z.boolean().default(true),
   isActive: z.boolean().default(true),
   isFeatured: z.boolean().default(false),
+  // AI-search tags — filter to only known keys so the data stays clean
+  tags: z.array(z.string()).optional().transform((arr) => (arr || []).filter((k) => TAG_KEYS.includes(k))),
 });
 
 // GET /api/admin/hotels — full list (admin view: includes inactive)
@@ -286,8 +289,9 @@ router.get("/hotels/:id/managers", async (req, res, next) => {
 const partnerUserSchema = z.object({
   email: z.string().email(),
   password: z.string().min(6),
-  firstName: z.string().min(1).optional(),
-  lastName: z.string().min(1).optional(),
+  // accept empty string OR a real name — frontend always sends a string
+  firstName: z.string().optional().nullable().transform((v) => (v && v.trim()) || null),
+  lastName: z.string().optional().nullable().transform((v) => (v && v.trim()) || null),
 });
 
 // create a partner user and link to this hotel (or link an existing user)

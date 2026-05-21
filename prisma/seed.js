@@ -52,6 +52,7 @@ async function main() {
       regionEn: "Algiers Province", regionFr: "Wilaya d'Alger", regionAr: "ولاية الجزائر",
       latitude: 36.7538, longitude: 3.0588, rating: 9.2, reviewCount: 342, isFeatured: true,
       amenityKeys: ["wifi", "pool", "spa", "restaurant", "gym", "parking", "room_service", "bar", "business", "beach"],
+      tags: ["city", "city_center", "luxury", "business", "pool", "spa", "sea_view"],
       rooms: [
         { typeEn: "Deluxe Sea View", typeFr: "Deluxe Vue Mer", typeAr: "ديلوكس بحرية", basePrice: 28000, capacity: 2, sizeSqm: 35, bedType: "King", totalUnits: 8 },
         { typeEn: "Premium Suite", typeFr: "Suite Premium", typeAr: "جناح بريميوم", basePrice: 42000, capacity: 3, sizeSqm: 55, bedType: "King", totalUnits: 4 },
@@ -75,6 +76,7 @@ async function main() {
       latitude: 24.5547, longitude: 9.4863, rating: 9.5, reviewCount: 187, isFeatured: true,
       checkInTime: "15:00", checkOutTime: "11:00",
       amenityKeys: ["wifi", "pool", "restaurant", "parking", "tours", "stargazing", "camel_treks", "tea_ceremony"],
+      tags: ["sahara", "luxury", "romantic", "historic"],
       rooms: [
         { typeEn: "Desert View Room", typeFr: "Chambre Vue Désert", typeAr: "غرفة صحراوية", basePrice: 22000, capacity: 2, sizeSqm: 30, bedType: "King", totalUnits: 10 },
         { typeEn: "Tassili Suite", typeFr: "Suite Tassili", typeAr: "جناح تاسيلي", basePrice: 35000, capacity: 2, sizeSqm: 50, bedType: "King", totalUnits: 4 },
@@ -97,6 +99,7 @@ async function main() {
       regionEn: "Constantine Province", regionFr: "Wilaya de Constantine", regionAr: "ولاية قسنطينة",
       latitude: 36.365, longitude: 6.6147, rating: 8.9, reviewCount: 256, isFeatured: true,
       amenityKeys: ["wifi", "restaurant", "gym", "parking", "room_service", "bar", "business", "spa"],
+      tags: ["city", "city_center", "historic", "business", "luxury"],
       rooms: [
         { typeEn: "Classic Room", typeFr: "Chambre Classique", typeAr: "غرفة كلاسيكية", basePrice: 25000, capacity: 2, sizeSqm: 28, bedType: "Queen", totalUnits: 12 },
         { typeEn: "Gorge View Suite", typeFr: "Suite Vue Gorge", typeAr: "جناح الأخدود", basePrice: 38000, capacity: 2, sizeSqm: 48, bedType: "King", totalUnits: 4 },
@@ -120,6 +123,7 @@ async function main() {
       latitude: 36.7852, longitude: 3.0597, rating: 8.7, reviewCount: 198,
       checkInTime: "15:00", checkOutTime: "11:00",
       amenityKeys: ["wifi", "restaurant", "room_service", "courtyard", "rooftop", "library"],
+      tags: ["city", "city_center", "historic", "romantic", "garden_view"],
       rooms: [
         { typeEn: "Heritage Room", typeFr: "Chambre Patrimoine", typeAr: "غرفة تراثية", basePrice: 18000, capacity: 2, sizeSqm: 25, bedType: "Queen", totalUnits: 6 },
         { typeEn: "Courtyard Suite", typeFr: "Suite Cour", typeAr: "جناح الفناء", basePrice: 28000, capacity: 2, sizeSqm: 40, bedType: "King", totalUnits: 3 },
@@ -141,6 +145,7 @@ async function main() {
       regionEn: "Oran Province", regionFr: "Wilaya d'Oran", regionAr: "ولاية وهران",
       latitude: 35.6969, longitude: -0.6331, rating: 9.0, reviewCount: 412, isFeatured: true,
       amenityKeys: ["wifi", "pool", "spa", "restaurant", "gym", "parking", "room_service", "bar", "beach", "water_sports"],
+      tags: ["beach", "sea_view", "family", "pool", "city"],
       rooms: [
         { typeEn: "Ocean View Room", typeFr: "Chambre Vue Océan", typeAr: "غرفة بحرية", basePrice: 32000, capacity: 2, sizeSqm: 35, bedType: "King", totalUnits: 10 },
         { typeEn: "Beach Suite", typeFr: "Suite Plage", typeAr: "جناح الشاطئ", basePrice: 48000, capacity: 3, sizeSqm: 60, bedType: "King", totalUnits: 4 },
@@ -163,6 +168,7 @@ async function main() {
       regionEn: "Batna Province", regionFr: "Wilaya de Batna", regionAr: "ولاية باتنة",
       latitude: 35.4849, longitude: 6.4683, rating: 8.3, reviewCount: 96,
       amenityKeys: ["wifi", "restaurant", "parking", "tours", "garden"],
+      tags: ["historic", "mountain", "family"],
       rooms: [
         { typeEn: "Standard Room", typeFr: "Chambre Standard", typeAr: "غرفة قياسية", basePrice: 12000, capacity: 2, sizeSqm: 22, bedType: "Double", totalUnits: 8 },
         { typeEn: "Superior Room", typeFr: "Chambre Supérieure", typeAr: "غرفة متفوقة", basePrice: 16000, capacity: 2, sizeSqm: 30, bedType: "King", totalUnits: 4 },
@@ -184,6 +190,7 @@ async function main() {
       regionEn: "Ghardaia Province", regionFr: "Wilaya de Ghardaïa", regionAr: "ولاية غرداية",
       latitude: 32.4903, longitude: 3.6736, rating: 8.6, reviewCount: 134,
       amenityKeys: ["wifi", "restaurant", "parking", "tours", "rooftop", "garden"],
+      tags: ["sahara", "historic", "romantic", "garden_view"],
       rooms: [
         { typeEn: "M'zab Room", typeFr: "Chambre M'zab", typeAr: "غرفة مزاب", basePrice: 16000, capacity: 2, sizeSqm: 26, bedType: "Double", totalUnits: 8 },
         { typeEn: "Oasis Suite", typeFr: "Suite Oasis", typeAr: "جناح الواحة", basePrice: 26000, capacity: 3, sizeSqm: 45, bedType: "King", totalUnits: 3 },
@@ -206,6 +213,7 @@ async function main() {
       latitude: 36.7448, longitude: 2.8884, rating: 8.6, reviewCount: 523, isFeatured: true,
       checkInTime: "15:00",
       amenityKeys: ["wifi", "pool", "spa", "restaurant", "gym", "parking", "room_service", "bar", "business", "beach", "golf"],
+      tags: ["beach", "sea_view", "luxury", "business", "pool", "family", "spa"],
       rooms: [
         { typeEn: "Deluxe Room", typeFr: "Chambre Deluxe", typeAr: "غرفة ديلوكس", basePrice: 35000, capacity: 2, sizeSqm: 38, bedType: "King", totalUnits: 15 },
         { typeEn: "Executive Suite", typeFr: "Suite Exécutive", typeAr: "جناح تنفيذي", basePrice: 52000, capacity: 3, sizeSqm: 65, bedType: "King", totalUnits: 6 },
@@ -228,6 +236,7 @@ async function main() {
       regionEn: "Tipaza Province", regionFr: "Wilaya de Tipaza", regionAr: "ولاية تيبازة",
       latitude: 36.5892, longitude: 2.4484, rating: 8.8, reviewCount: 167,
       amenityKeys: ["wifi", "restaurant", "parking", "pool", "garden", "tours"],
+      tags: ["beach", "sea_view", "romantic", "historic", "pool"],
       rooms: [
         { typeEn: "Garden Room", typeFr: "Chambre Jardin", typeAr: "غرفة الحديقة", basePrice: 20000, capacity: 2, sizeSqm: 28, bedType: "Queen", totalUnits: 6 },
         { typeEn: "Sea View Suite", typeFr: "Suite Vue Mer", typeAr: "جناح بإطلالة بحرية", basePrice: 30000, capacity: 2, sizeSqm: 42, bedType: "King", totalUnits: 3 },
@@ -249,6 +258,7 @@ async function main() {
       regionEn: "Bejaia Province", regionFr: "Wilaya de Béjaïa", regionAr: "ولاية بجاية",
       latitude: 36.7508, longitude: 5.0567, rating: 8.5, reviewCount: 289,
       amenityKeys: ["wifi", "pool", "restaurant", "gym", "parking", "spa", "beach", "kayaking"],
+      tags: ["beach", "sea_view", "city", "family", "pool", "garden_view"],
       rooms: [
         { typeEn: "Mountain View Room", typeFr: "Chambre Vue Montagne", typeAr: "غرفة إطلالة جبلية", basePrice: 24000, capacity: 2, sizeSqm: 32, bedType: "King", totalUnits: 10 },
         { typeEn: "Bay Suite", typeFr: "Suite Baie", typeAr: "جناح الخليج", basePrice: 38000, capacity: 3, sizeSqm: 55, bedType: "King", totalUnits: 4 },

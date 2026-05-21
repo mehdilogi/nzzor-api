@@ -47,6 +47,7 @@ function formatHotel(hotel, lang = "en") {
       verifiedPartner: hotel.verifiedPartner,
     },
     isFeatured: hotel.isFeatured,
+    tags: hotel.tags || [],
     priceFrom: hotel.rooms?.length
       ? Math.min(...hotel.rooms.filter(r => r.isActive).map(r => r.basePrice))
       : null,

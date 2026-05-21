@@ -19,6 +19,14 @@ router.get("/", async (req, res, next) => {
     if (req.query.city) where.city = req.query.city.toLowerCase();
     if (req.query.stars) where.stars = { gte: parseInt(req.query.stars) };
     if (req.query.featured === "true") where.isFeatured = true;
+    // Tags can arrive as a comma-separated string ("beach,family") or as repeated
+    // params (?tags=beach&tags=family). A hotel must match ALL requested tags.
+    if (req.query.tags) {
+      const tagList = Array.isArray(req.query.tags)
+        ? req.query.tags
+        : String(req.query.tags).split(",").map((s) => s.trim()).filter(Boolean);
+      if (tagList.length) where.tags = { hasEvery: tagList };
+    }
     if (req.query.minPrice || req.query.maxPrice) {
       where.rooms = {
         some: {
@@ -80,6 +88,14 @@ router.get("/meta/cities", async (req, res, next) => {
         hotelCount: c._count.id,
       })),
     });
+  } catch (err) { next(err); }
+});
+
+// GET /api/hotels/meta/tags — the canonical tag dictionary
+router.get("/meta/tags", async (req, res, next) => {
+  try {
+    const { TAGS } = require("../utils/tags");
+    res.json({ data: TAGS });
   } catch (err) { next(err); }
 });
 

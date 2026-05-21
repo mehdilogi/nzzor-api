@@ -149,6 +149,9 @@ model Hotel {
   isFeatured    Boolean @default(false)
   sortOrder     Int     @default(0)
 
+  // AI-search tags — see TAG_DICTIONARY in src/utils/tags.js for canonical keys
+  tags          String[] @default([])
+
   rooms         Room[]
   photos        HotelPhoto[]
   amenities     HotelAmenity[]
