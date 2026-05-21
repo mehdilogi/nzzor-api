@@ -351,4 +351,31 @@ router.delete("/hotels/:id/managers/:userId", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// reset a partner user's password (admin-controlled — for when partners
+// forget their password and call Allouni for help)
+const resetPasswordSchema = z.object({
+  newPassword: z.string().min(6),
+});
+router.post("/hotels/:id/managers/:userId/reset-password", async (req, res, next) => {
+  try {
+    const { newPassword } = resetPasswordSchema.parse(req.body);
+    // confirm this user is actually linked to this hotel — prevents admins
+    // from resetting passwords of users they aren't managing through this hotel
+    const link = await prisma.hotelManager.findUnique({
+      where: { userId_hotelId: { userId: req.params.userId, hotelId: req.params.id } },
+    });
+    if (!link) return res.status(404).json({ error: "Partner not linked to this hotel" });
+
+    const passwordHash = await bcrypt.hash(newPassword, 12);
+    await prisma.user.update({
+      where: { id: req.params.userId },
+      data: { passwordHash },
+    });
+    res.json({ ok: true });
+  } catch (err) {
+    if (err.name === "ZodError") return res.status(400).json({ error: err.errors });
+    next(err);
+  }
+});
+
 module.exports = router;
