@@ -6,10 +6,19 @@
 const router = require("express").Router();
 const { z } = require("zod");
 const bcrypt = require("bcryptjs");
+const multer = require("multer");
 const prisma = require("../utils/prisma");
 const { requireAuth, requireAdmin } = require("../middleware/auth");
 const { formatHotel } = require("../utils/helpers");
 const { TAG_KEYS } = require("../utils/tags");
+const { uploadHotelPhoto, deleteHotelPhoto, isR2Configured } = require("../utils/r2");
+
+// In-memory upload — files are streamed straight to R2, never touch disk.
+// Limit 8MB per file to keep uploads snappy and within R2 free-tier sanity.
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 8 * 1024 * 1024 },
+});
 
 router.use(requireAuth, requireAdmin);
 
@@ -165,10 +174,75 @@ router.post("/hotels/:id/photos", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// DELETE /api/admin/photos/:photoId
+// POST /api/admin/hotels/:id/photos/upload — upload a real file to R2
+// multipart/form-data with field "photo"
+router.post("/hotels/:id/photos/upload", upload.single("photo"), async (req, res, next) => {
+  try {
+    if (!isR2Configured()) {
+      return res.status(503).json({
+        error: "Photo upload is not configured on this server. Set R2_* env vars on the backend.",
+      });
+    }
+    if (!req.file) {
+      return res.status(400).json({ error: "No file received. Field must be named 'photo'." });
+    }
+    // look up hotel slug so we can organize files in R2: hotels/{slug}/{file}
+    const hotel = await prisma.hotel.findUnique({
+      where: { id: req.params.id },
+      select: { id: true, slug: true },
+    });
+    if (!hotel) return res.status(404).json({ error: "Hotel not found" });
+
+    const { url } = await uploadHotelPhoto(
+      req.file.buffer,
+      req.file.mimetype,
+      hotel.slug,
+    );
+
+    const count = await prisma.hotelPhoto.count({ where: { hotelId: hotel.id } });
+    const isPrimary = req.body && req.body.isPrimary === "true";
+    if (isPrimary) {
+      await prisma.hotelPhoto.updateMany({
+        where: { hotelId: hotel.id },
+        data: { isPrimary: false },
+      });
+    }
+    const photo = await prisma.hotelPhoto.create({
+      data: {
+        hotelId: hotel.id,
+        url,
+        isPrimary: isPrimary || count === 0,
+        sortOrder: count,
+      },
+    });
+    res.status(201).json({ data: photo, message: "Photo uploaded" });
+  } catch (err) {
+    // multer file-too-large error has a specific code
+    if (err && err.code === "LIMIT_FILE_SIZE") {
+      return res.status(413).json({ error: "Image is too large. Max 8 MB." });
+    }
+    // surface the R2 module's clear errors directly to the client
+    if (err && typeof err.message === "string" && (
+      err.message.includes("Unsupported image type") ||
+      err.message.includes("R2 storage is not configured")
+    )) {
+      return res.status(400).json({ error: err.message });
+    }
+    next(err);
+  }
+});
+
+// DELETE /api/admin/photos/:photoId — also remove from R2 if it's our file
 router.delete("/photos/:photoId", async (req, res, next) => {
   try {
-    await prisma.hotelPhoto.delete({ where: { id: req.params.photoId } });
+    const photo = await prisma.hotelPhoto.findUnique({
+      where: { id: req.params.photoId },
+    });
+    if (photo) {
+      // fire-and-forget R2 delete: don't block the API on storage cleanup
+      deleteHotelPhoto(photo.url).catch(() => {});
+      await prisma.hotelPhoto.delete({ where: { id: req.params.photoId } });
+    }
     res.json({ message: "Photo removed" });
   } catch (err) { next(err); }
 });
