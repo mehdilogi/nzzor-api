@@ -3,6 +3,7 @@ const { z } = require("zod");
 const prisma = require("../utils/prisma");
 const { generateBookingRef, formatBooking } = require("../utils/helpers");
 const { optionalAuth } = require("../middleware/auth");
+const emailService = require("../services/emailService");
 
 const createBookingSchema = z.object({
   hotelId: z.string().uuid(),
@@ -114,8 +115,20 @@ router.post("/", optionalAuth, async (req, res, next) => {
       },
     });
 
+    const formattedBooking = formatBooking(booking, data.lang);
+
+    // Fire the confirmation email asynchronously. We respond to the client
+    // immediately and let the email send happen on the next tick. If Resend
+    // is slow, down, or misconfigured we DO NOT want to fail the booking —
+    // the booking is already persisted, the customer needs their reference.
+    setImmediate(() => {
+      emailService.sendBookingCreated(formattedBooking, data.lang).catch((err) => {
+        console.error(`[bookings] sendBookingCreated failed for ${booking.reference}:`, err);
+      });
+    });
+
     res.status(201).json({
-      data: formatBooking(booking, data.lang),
+      data: formattedBooking,
       message: "Booking created successfully",
     });
   } catch (err) {

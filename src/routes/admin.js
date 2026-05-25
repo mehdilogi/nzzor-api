@@ -2,6 +2,7 @@ const router = require("express").Router();
 const prisma = require("../utils/prisma");
 const { requireAuth, requireAdmin } = require("../middleware/auth");
 const { formatBooking, paginate } = require("../utils/helpers");
+const emailService = require("../services/emailService");
 
 router.use(requireAuth, requireAdmin);
 
@@ -114,6 +115,18 @@ router.patch("/bookings/:id/status", async (req, res, next) => {
     if (!validStatuses.includes(status)) {
       return res.status(400).json({ error: `Invalid status. Must be one of: ${validStatuses.join(", ")}` });
     }
+
+    // Read the current status BEFORE update so we know whether this is a
+    // genuine state transition (e.g. PENDING → CONFIRMED) vs a no-op write.
+    // We only fire the "confirmed" email on a real transition, not when the
+    // admin re-saves an already-confirmed booking.
+    const existing = await prisma.booking.findUnique({
+      where: { id: req.params.id },
+      select: { status: true },
+    });
+    if (!existing) return res.status(404).json({ error: "Booking not found" });
+    const previousStatus = existing.status;
+
     const booking = await prisma.booking.update({
       where: { id: req.params.id },
       data: {
@@ -123,7 +136,69 @@ router.patch("/bookings/:id/status", async (req, res, next) => {
       },
       include: { hotel: true, rooms: { include: { room: true } } },
     });
-    res.json({ data: formatBooking(booking), message: `Booking status updated to ${status}` });
+
+    const formatted = formatBooking(booking, booking.lang || "en");
+
+    // Fire "confirmed" email only on the genuine PENDING → CONFIRMED
+    // transition. Skipping noisy duplicates means no spam for the customer
+    // and no surprise re-emails if an admin saves the same status twice.
+    if (status === "CONFIRMED" && previousStatus === "PENDING") {
+      setImmediate(() => {
+        emailService.sendBookingConfirmed(formatted, booking.lang || "fr").catch((err) => {
+          console.error(`[admin] sendBookingConfirmed failed for ${booking.reference}:`, err);
+        });
+      });
+    }
+
+    res.json({ data: formatted, message: `Booking status updated to ${status}` });
+  } catch (err) { next(err); }
+});
+
+// PATCH /api/admin/bookings/:id/payment
+// Mark the booking's payment as received. Used by the Allouni team once cash
+// has been counted on arrival, a bank transfer has cleared, or a CIB charge
+// has been captured. Fires the "paid" email to the guest as their receipt.
+//
+// Body: { paymentStatus: "PAID" | "FAILED" | "REFUNDED" | "PARTIALLY_REFUNDED" }
+router.patch("/bookings/:id/payment", async (req, res, next) => {
+  try {
+    const { paymentStatus } = req.body;
+    const validPaymentStatuses = ["PENDING", "PAID", "FAILED", "REFUNDED", "PARTIALLY_REFUNDED"];
+    if (!validPaymentStatuses.includes(paymentStatus)) {
+      return res.status(400).json({
+        error: `Invalid paymentStatus. Must be one of: ${validPaymentStatuses.join(", ")}`,
+      });
+    }
+
+    const existing = await prisma.booking.findUnique({
+      where: { id: req.params.id },
+      select: { paymentStatus: true },
+    });
+    if (!existing) return res.status(404).json({ error: "Booking not found" });
+    const previousPaymentStatus = existing.paymentStatus;
+
+    const booking = await prisma.booking.update({
+      where: { id: req.params.id },
+      data: {
+        paymentStatus,
+        ...(paymentStatus === "PAID" ? { paidAt: new Date() } : {}),
+      },
+      include: { hotel: true, rooms: { include: { room: true } } },
+    });
+
+    const formatted = formatBooking(booking, booking.lang || "en");
+
+    // Fire "paid" receipt email only on a real PENDING → PAID transition.
+    // Avoids re-emailing the receipt if an admin clicks Save twice.
+    if (paymentStatus === "PAID" && previousPaymentStatus !== "PAID") {
+      setImmediate(() => {
+        emailService.sendBookingPaid(formatted, booking.lang || "fr").catch((err) => {
+          console.error(`[admin] sendBookingPaid failed for ${booking.reference}:`, err);
+        });
+      });
+    }
+
+    res.json({ data: formatted, message: `Payment status updated to ${paymentStatus}` });
   } catch (err) { next(err); }
 });
 
