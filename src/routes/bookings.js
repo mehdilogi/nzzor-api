@@ -3,7 +3,7 @@ const { z } = require("zod");
 const prisma = require("../utils/prisma");
 const { generateBookingRef, formatBooking } = require("../utils/helpers");
 const { optionalAuth } = require("../middleware/auth");
-const emailService = require("../services/emailService");
+const bookingService = require("../services/bookingService");
 
 const createBookingSchema = z.object({
   hotelId: z.string().uuid(),
@@ -117,15 +117,11 @@ router.post("/", optionalAuth, async (req, res, next) => {
 
     const formattedBooking = formatBooking(booking, data.lang);
 
-    // Fire the confirmation email asynchronously. We respond to the client
-    // immediately and let the email send happen on the next tick. If Resend
-    // is slow, down, or misconfigured we DO NOT want to fail the booking —
-    // the booking is already persisted, the customer needs their reference.
-    setImmediate(() => {
-      emailService.sendBookingCreated(formattedBooking, data.lang).catch((err) => {
-        console.error(`[bookings] sendBookingCreated failed for ${booking.reference}:`, err);
-      });
-    });
+    // Notify the customer asynchronously via the booking service. The service
+    // owns the fire-and-forget pattern — if Resend is slow, down, or
+    // misconfigured we DO NOT want to fail the booking. The booking is
+    // already persisted, the customer needs their reference.
+    bookingService.notifyBookingCreated(formattedBooking, data.lang);
 
     res.status(201).json({
       data: formattedBooking,
@@ -160,24 +156,24 @@ router.patch("/:reference/cancel", async (req, res, next) => {
   try {
     const booking = await prisma.booking.findUnique({
       where: { reference: req.params.reference.toUpperCase() },
+      select: { id: true, status: true, lang: true },
     });
     if (!booking) return res.status(404).json({ error: "Booking not found" });
     if (!["PENDING", "CONFIRMED"].includes(booking.status)) {
       return res.status(400).json({ error: `Cannot cancel a booking with status: ${booking.status}` });
     }
-    const updated = await prisma.booking.update({
-      where: { id: booking.id },
-      data: {
-        status: "CANCELLED",
-        cancelledAt: new Date(),
-        cancelReason: req.body.reason || "Cancelled by guest",
-      },
-      include: { hotel: true, rooms: { include: { room: true } } },
+
+    // Hand off to the booking service. It handles the DB update, fires the
+    // "cancelled" email, and gives us back a formatted response payload.
+    const formatted = await bookingService.transitionBookingStatus({
+      bookingId: booking.id,
+      newStatus: "CANCELLED",
+      actor: "customer",
+      reason: req.body.reason || "Cancelled by guest",
+      lang: req.query.lang || booking.lang || "en",
     });
-    res.json({
-      data: formatBooking(updated, req.query.lang || "en"),
-      message: "Booking cancelled successfully",
-    });
+
+    res.json({ data: formatted, message: "Booking cancelled successfully" });
   } catch (err) { next(err); }
 });
 

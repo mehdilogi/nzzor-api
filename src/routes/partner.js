@@ -8,6 +8,7 @@ const router = require("express").Router();
 const prisma = require("../utils/prisma");
 const { requireAuth, requirePartner } = require("../middleware/auth");
 const { formatBooking } = require("../utils/helpers");
+const bookingService = require("../services/bookingService");
 
 router.use(requireAuth, requirePartner);
 
@@ -122,16 +123,25 @@ router.post("/bookings/:id/confirm", async (req, res, next) => {
     if (booking.status !== "PENDING") {
       return res.status(400).json({ error: `Cannot confirm a booking with status ${booking.status}` });
     }
-    const updated = await prisma.booking.update({
-      where: { id: booking.id },
-      data: { status: "CONFIRMED", confirmedAt: new Date() },
+
+    // Hand off to bookingService. It performs the DB update and fires the
+    // "confirmed" email to the guest. Partner-side actions are tagged with
+    // actor="partner" in logs for audit/debug visibility.
+    const formatted = await bookingService.transitionBookingStatus({
+      bookingId: booking.id,
+      newStatus: "CONFIRMED",
+      actor: "partner",
     });
-    res.json({ data: { id: updated.id, status: updated.status } });
-  } catch (e) { next(e); }
+
+    res.json({ data: { id: formatted.id, status: formatted.status } });
+  } catch (e) {
+    if (e.statusCode === 404) return res.status(404).json({ error: e.message });
+    next(e);
+  }
 });
 
 // ---- POST /api/partner/bookings/:id/reject  ---------------------------------
-// hotel rejects a pending booking — triggers refund-needed flag
+// hotel rejects a pending booking — triggers refund-needed flag + customer email
 router.post("/bookings/:id/reject", async (req, res, next) => {
   try {
     const { reason } = req.body || {};
@@ -146,20 +156,31 @@ router.post("/bookings/:id/reject", async (req, res, next) => {
     if (booking.status !== "PENDING") {
       return res.status(400).json({ error: `Cannot reject a booking with status ${booking.status}` });
     }
-    // if payment was already taken, mark it for refund
-    const paymentStatus =
-      booking.paymentStatus === "PAID" ? "REFUNDED" : booking.paymentStatus;
-    const updated = await prisma.booking.update({
-      where: { id: booking.id },
-      data: {
-        status: "REJECTED",
-        paymentStatus,
-        cancelledAt: new Date(),
-        cancellationReason: reason || "Hotel rejected the booking",
-      },
+
+    // If payment was already taken, mark it for refund. We do this directly
+    // here (not via the service) because no email goes out for the payment
+    // status change — the rejection email already covers refund expectations
+    // in its body, and we don't want to spam the customer with two emails.
+    if (booking.paymentStatus === "PAID") {
+      await prisma.booking.update({
+        where: { id: booking.id },
+        data: { paymentStatus: "REFUNDED" },
+      });
+    }
+
+    // Now transition status to REJECTED — service fires the "rejected" email.
+    const formatted = await bookingService.transitionBookingStatus({
+      bookingId: booking.id,
+      newStatus: "REJECTED",
+      actor: "partner",
+      reason: reason || "Hotel rejected the booking",
     });
-    res.json({ data: { id: updated.id, status: updated.status } });
-  } catch (e) { next(e); }
+
+    res.json({ data: { id: formatted.id, status: formatted.status } });
+  } catch (e) {
+    if (e.statusCode === 404) return res.status(404).json({ error: e.message });
+    next(e);
+  }
 });
 
 // ---- AVAILABILITY ----------------------------------------------------------

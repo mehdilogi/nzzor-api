@@ -99,6 +99,63 @@ const STRINGS = {
     ar: "إن احتجت لفاتورة رسمية لأغراض تجارية أو استرداد المصاريف، رد على هذا البريد وسنرسل واحدة خلال يوم عمل واحد.",
   },
 
+  // ---- VARIANT: rejected — hotel was unable to confirm the booking ----
+  // Tone: apologetic but not over-apologetic. The customer didn't choose
+  // this. Be clear about what happens next (refund, alternatives).
+  "variant.rejected.preview": {
+    en: "We weren't able to confirm booking {reference} — full refund on the way.",
+    fr: "Nous n'avons pas pu confirmer la réservation {reference} — remboursement complet en cours.",
+    ar: "لم نتمكن من تأكيد الحجز {reference} — استرداد كامل قيد التنفيذ.",
+  },
+  "variant.rejected.kicker": {
+    en: "Booking not confirmed",
+    fr: "Réservation non confirmée",
+    ar: "لم يتم تأكيد الحجز",
+  },
+  "variant.rejected.heading": {
+    en: "We're sorry — the hotel couldn't confirm this booking.",
+    fr: "Nous sommes désolés — l'hôtel n'a pas pu confirmer cette réservation.",
+    ar: "نأسف — لم يستطع الفندق تأكيد هذا الحجز.",
+  },
+  "variant.rejected.lead": {
+    en: "Hi {firstName} — the hotel was unable to honor your booking for the dates you requested. This usually means the room is no longer available. We've recorded this and any payment you made will be refunded in full.",
+    fr: "Bonjour {firstName} — l'hôtel n'a pas pu honorer votre réservation aux dates demandées. Cela signifie généralement que la chambre n'est plus disponible. Nous avons enregistré cela et tout paiement effectué sera intégralement remboursé.",
+    ar: "مرحباً {firstName} — لم يتمكن الفندق من قبول حجزك للتواريخ المطلوبة. عادةً ما يعني هذا أن الغرفة لم تعد متاحة. لقد سجّلنا ذلك وسيتم استرداد أي دفعة قمت بها بالكامل.",
+  },
+  "variant.rejected.note": {
+    en: "If a payment was charged, the refund will appear on your card within 7–14 business days depending on your bank. We'd be happy to help you find a similar hotel for the same dates — just reply to this email and our team will send options within the hour.",
+    fr: "Si un paiement a été prélevé, le remboursement apparaîtra sur votre carte sous 7 à 14 jours ouvrables selon votre banque. Nous serions heureux de vous aider à trouver un hôtel similaire pour les mêmes dates — répondez simplement à cet e-mail et notre équipe vous enverra des options dans l'heure.",
+    ar: "إن تم تحصيل دفعة، سيظهر الاسترداد على بطاقتك خلال 7-14 يوم عمل حسب بنكك. يسعدنا مساعدتك في العثور على فندق مماثل لنفس التواريخ — فقط رد على هذا البريد وسيرسل فريقنا الخيارات خلال ساعة.",
+  },
+
+  // ---- VARIANT: cancelled — booking cancelled (by customer, admin, or system) ----
+  // Tone: factual, neutral on who initiated. Cover refund timing.
+  "variant.cancelled.preview": {
+    en: "Booking {reference} has been cancelled.",
+    fr: "La réservation {reference} a été annulée.",
+    ar: "تم إلغاء الحجز {reference}.",
+  },
+  "variant.cancelled.kicker": {
+    en: "Booking cancelled",
+    fr: "Réservation annulée",
+    ar: "تم إلغاء الحجز",
+  },
+  "variant.cancelled.heading": {
+    en: "Your booking has been cancelled.",
+    fr: "Votre réservation a été annulée.",
+    ar: "تم إلغاء حجزك.",
+  },
+  "variant.cancelled.lead": {
+    en: "Hi {firstName} — this email confirms your booking has been cancelled. Below are the details for your records.",
+    fr: "Bonjour {firstName} — cet e-mail confirme l'annulation de votre réservation. Voici les détails pour vos dossiers.",
+    ar: "مرحباً {firstName} — هذا البريد يؤكد إلغاء حجزك. فيما يلي التفاصيل للحفظ.",
+  },
+  "variant.cancelled.note": {
+    en: "If you've already paid, the refund will follow our cancellation policy. For bookings cancelled more than 48 hours before check-in, the full amount is refunded. Inside 48 hours, charges may apply per the hotel's policy. We'll send a separate refund confirmation once it's processed.",
+    fr: "Si vous avez déjà payé, le remboursement suivra notre politique d'annulation. Pour les réservations annulées plus de 48 heures avant l'arrivée, le montant total est remboursé. Dans les 48 heures, des frais peuvent s'appliquer selon la politique de l'hôtel. Nous enverrons une confirmation de remboursement distincte une fois traitée.",
+    ar: "إن كنت قد دفعت بالفعل، فسيتبع الاسترداد سياسة الإلغاء لدينا. بالنسبة للحجوزات الملغاة قبل أكثر من 48 ساعة من الوصول، يتم استرداد المبلغ بالكامل. ضمن 48 ساعة، قد تنطبق رسوم وفقاً لسياسة الفندق. سنرسل تأكيد استرداد منفصلاً بمجرد معالجته.",
+  },
+
   // ---- Booking reference card ----
   "ref.label": {
     en: "BOOKING REFERENCE",

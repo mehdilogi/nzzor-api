@@ -2,7 +2,7 @@ const router = require("express").Router();
 const prisma = require("../utils/prisma");
 const { requireAuth, requireAdmin } = require("../middleware/auth");
 const { formatBooking, paginate } = require("../utils/helpers");
-const emailService = require("../services/emailService");
+const bookingService = require("../services/bookingService");
 
 router.use(requireAuth, requireAdmin);
 
@@ -110,54 +110,34 @@ router.get("/bookings/:id", async (req, res, next) => {
 
 router.patch("/bookings/:id/status", async (req, res, next) => {
   try {
-    const { status } = req.body;
+    const { status, reason } = req.body;
     const validStatuses = ["PENDING", "CONFIRMED", "CANCELLED", "COMPLETED", "NO_SHOW", "REFUNDED"];
     if (!validStatuses.includes(status)) {
       return res.status(400).json({ error: `Invalid status. Must be one of: ${validStatuses.join(", ")}` });
     }
 
-    // Read the current status BEFORE update so we know whether this is a
-    // genuine state transition (e.g. PENDING → CONFIRMED) vs a no-op write.
-    // We only fire the "confirmed" email on a real transition, not when the
-    // admin re-saves an already-confirmed booking.
-    const existing = await prisma.booking.findUnique({
-      where: { id: req.params.id },
-      select: { status: true },
+    // Hand off to bookingService. It reads the previous status, performs the
+    // update atomically, and fires the right email if (and only if) this is
+    // a real state transition. No duplicate emails on no-op writes.
+    const formatted = await bookingService.transitionBookingStatus({
+      bookingId: req.params.id,
+      newStatus: status,
+      actor: "admin",
+      reason,
     });
-    if (!existing) return res.status(404).json({ error: "Booking not found" });
-    const previousStatus = existing.status;
-
-    const booking = await prisma.booking.update({
-      where: { id: req.params.id },
-      data: {
-        status,
-        ...(status === "CONFIRMED" ? { confirmedAt: new Date() } : {}),
-        ...(status === "CANCELLED" ? { cancelledAt: new Date() } : {}),
-      },
-      include: { hotel: true, rooms: { include: { room: true } } },
-    });
-
-    const formatted = formatBooking(booking, booking.lang || "en");
-
-    // Fire "confirmed" email only on the genuine PENDING → CONFIRMED
-    // transition. Skipping noisy duplicates means no spam for the customer
-    // and no surprise re-emails if an admin saves the same status twice.
-    if (status === "CONFIRMED" && previousStatus === "PENDING") {
-      setImmediate(() => {
-        emailService.sendBookingConfirmed(formatted, booking.lang || "fr").catch((err) => {
-          console.error(`[admin] sendBookingConfirmed failed for ${booking.reference}:`, err);
-        });
-      });
-    }
 
     res.json({ data: formatted, message: `Booking status updated to ${status}` });
-  } catch (err) { next(err); }
+  } catch (err) {
+    // bookingService throws { statusCode: 404, message } for not-found.
+    if (err.statusCode === 404) return res.status(404).json({ error: err.message });
+    next(err);
+  }
 });
 
 // PATCH /api/admin/bookings/:id/payment
-// Mark the booking's payment as received. Used by the Allouni team once cash
-// has been counted on arrival, a bank transfer has cleared, or a CIB charge
-// has been captured. Fires the "paid" email to the guest as their receipt.
+// Mark the booking's payment status. Used by the Allouni team once cash has
+// been counted on arrival, a bank transfer has cleared, or a CIB charge has
+// been captured. Fires the "paid" receipt email on PENDING/FAILED → PAID.
 //
 // Body: { paymentStatus: "PAID" | "FAILED" | "REFUNDED" | "PARTIALLY_REFUNDED" }
 router.patch("/bookings/:id/payment", async (req, res, next) => {
@@ -170,36 +150,17 @@ router.patch("/bookings/:id/payment", async (req, res, next) => {
       });
     }
 
-    const existing = await prisma.booking.findUnique({
-      where: { id: req.params.id },
-      select: { paymentStatus: true },
+    const formatted = await bookingService.transitionBookingPayment({
+      bookingId: req.params.id,
+      newPaymentStatus: paymentStatus,
+      actor: "admin",
     });
-    if (!existing) return res.status(404).json({ error: "Booking not found" });
-    const previousPaymentStatus = existing.paymentStatus;
-
-    const booking = await prisma.booking.update({
-      where: { id: req.params.id },
-      data: {
-        paymentStatus,
-        ...(paymentStatus === "PAID" ? { paidAt: new Date() } : {}),
-      },
-      include: { hotel: true, rooms: { include: { room: true } } },
-    });
-
-    const formatted = formatBooking(booking, booking.lang || "en");
-
-    // Fire "paid" receipt email only on a real PENDING → PAID transition.
-    // Avoids re-emailing the receipt if an admin clicks Save twice.
-    if (paymentStatus === "PAID" && previousPaymentStatus !== "PAID") {
-      setImmediate(() => {
-        emailService.sendBookingPaid(formatted, booking.lang || "fr").catch((err) => {
-          console.error(`[admin] sendBookingPaid failed for ${booking.reference}:`, err);
-        });
-      });
-    }
 
     res.json({ data: formatted, message: `Payment status updated to ${paymentStatus}` });
-  } catch (err) { next(err); }
+  } catch (err) {
+    if (err.statusCode === 404) return res.status(404).json({ error: err.message });
+    next(err);
+  }
 });
 
 module.exports = router;

@@ -209,8 +209,40 @@ async function sendBookingPaid(booking, lang = "fr") {
   return renderAndSend({ variant: "paid", booking, subject, lang });
 }
 
+/**
+ * Send the "booking rejected" email — fires when the hotel partner refuses
+ * to honor a booking (room no longer available, dates clash, etc.). Customer
+ * didn't choose this, so tone is apologetic and refund-forward.
+ *
+ * @param {Object} booking — formatted booking object
+ * @param {string} lang    — "en" | "fr" | "ar"
+ * @returns {Promise<string|null>}
+ */
+async function sendBookingRejected(booking, lang = "fr") {
+  const { t } = require("./emailStrings");
+  const subject = `${t("variant.rejected.kicker", lang)} · ${booking.reference}`;
+  return renderAndSend({ variant: "rejected", booking, subject, lang });
+}
+
+/**
+ * Send the "booking cancelled" email — fires when a booking is cancelled by
+ * the customer themselves, by admin, or by a system process. Neutral on who
+ * initiated; covers refund-timing expectations.
+ *
+ * @param {Object} booking — formatted booking object
+ * @param {string} lang    — "en" | "fr" | "ar"
+ * @returns {Promise<string|null>}
+ */
+async function sendBookingCancelled(booking, lang = "fr") {
+  const { t } = require("./emailStrings");
+  const subject = `${t("variant.cancelled.kicker", lang)} · ${booking.reference}`;
+  return renderAndSend({ variant: "cancelled", booking, subject, lang });
+}
+
 module.exports = {
   sendBookingCreated,
   sendBookingConfirmed,
   sendBookingPaid,
+  sendBookingRejected,
+  sendBookingCancelled,
 };
