@@ -3,6 +3,7 @@ const prisma = require("../utils/prisma");
 const { requireAuth, requireAdmin } = require("../middleware/auth");
 const { formatBooking, paginate } = require("../utils/helpers");
 const bookingService = require("../services/bookingService");
+const { startOfTodayInAlgiers, endOfTodayInAlgiers } = require("../utils/dates");
 
 router.use(requireAuth, requireAdmin);
 
@@ -66,6 +67,104 @@ router.get("/dashboard", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// =============================================================================
+// GET /api/admin/today — Today's activity feed
+// -----------------------------------------------------------------------------
+// Powers the "Today's activity" panel on the admin overview tab. Returns
+// summary counts plus a short list of recent state transitions so the team
+// can see at a glance "what happened on the platform today" without
+// scrolling the full bookings list.
+//
+// "Today" is computed in ALGIERS local time so the counts feel correct to
+// staff in Algeria regardless of where Railway physically runs the server.
+//
+// Item #7 from the polish queue. We deliberately query the existing
+// bookings table by timestamps (createdAt / confirmedAt / cancelledAt)
+// rather than introducing a separate booking_events audit-log table —
+// it's simpler, requires no schema migration, and covers 95% of what an
+// operations team needs. If we later want a full audit trail of every
+// state change with actor info, that's a separate feature.
+// =============================================================================
+router.get("/today", async (req, res, next) => {
+  try {
+    const lang = req.query.lang || "en";
+    const start = startOfTodayInAlgiers();
+    const end = endOfTodayInAlgiers();
+    const todayWindow = { gte: start, lte: end };
+
+    // Run all the count queries in parallel — they're independent.
+    const [
+      createdToday,
+      confirmedToday,
+      cancelledToday,
+      paidTodayRevenue,
+      recentTransitions,
+    ] = await Promise.all([
+      prisma.booking.count({ where: { createdAt: todayWindow } }),
+      prisma.booking.count({ where: { confirmedAt: todayWindow } }),
+      prisma.booking.count({ where: { cancelledAt: todayWindow } }),
+      // Revenue locked in today via confirmations
+      prisma.booking.aggregate({
+        where: { confirmedAt: todayWindow, status: "CONFIRMED" },
+        _sum: { total: true },
+      }),
+      // Latest ~15 bookings touched today, regardless of which lifecycle
+      // event happened. We compute the per-row "kind" client-side from the
+      // timestamps so we can show "what changed" without separate queries.
+      prisma.booking.findMany({
+        where: {
+          OR: [
+            { createdAt: todayWindow },
+            { confirmedAt: todayWindow },
+            { cancelledAt: todayWindow },
+          ],
+        },
+        include: { hotel: true, rooms: { include: { room: true } } },
+        orderBy: { updatedAt: "desc" },
+        take: 15,
+      }),
+    ]);
+
+    // Annotate each recent transition with the LATEST event we know about
+    // (the timestamp most recently touched). The frontend renders this as
+    // "10:42 · Royal Maqam booking NZR-XX confirmed".
+    const events = recentTransitions.map((b) => {
+      const tCreated   = b.createdAt   && b.createdAt   >= start && b.createdAt   <= end ? b.createdAt   : null;
+      const tConfirmed = b.confirmedAt && b.confirmedAt >= start && b.confirmedAt <= end ? b.confirmedAt : null;
+      const tCancelled = b.cancelledAt && b.cancelledAt >= start && b.cancelledAt <= end ? b.cancelledAt : null;
+
+      // Pick the LATEST among the three to decide "what happened most recently"
+      let kind = "created";
+      let at = tCreated;
+      if (tCancelled && (!at || tCancelled > at)) { kind = b.status === "REJECTED" ? "rejected" : "cancelled"; at = tCancelled; }
+      if (tConfirmed && (!at || tConfirmed > at)) { kind = "confirmed"; at = tConfirmed; }
+
+      return {
+        ...formatBooking(b, lang),
+        event: {
+          kind,
+          at: at?.toISOString() || b.updatedAt?.toISOString() || null,
+        },
+      };
+    });
+
+    res.json({
+      data: {
+        counts: {
+          created: createdToday,
+          confirmed: confirmedToday,
+          cancelled: cancelledToday,
+          revenueConfirmed: paidTodayRevenue._sum.total || 0,
+          currency: "DZD",
+        },
+        events,
+        windowStart: start.toISOString(),
+        windowEnd: end.toISOString(),
+      },
+    });
+  } catch (err) { next(err); }
+});
+
 router.get("/bookings", async (req, res, next) => {
   try {
     const { skip, take, page, limit } = paginate(req.query);
@@ -73,8 +172,36 @@ router.get("/bookings", async (req, res, next) => {
 
     const where = {};
     if (req.query.status) where.status = req.query.status;
+    if (req.query.paymentStatus) where.paymentStatus = req.query.paymentStatus;
     if (req.query.hotelId) where.hotelId = req.query.hotelId;
-    if (req.query.from) where.createdAt = { gte: new Date(req.query.from) };
+
+    // Date range on createdAt — supports `from`, `to`, or both. Both come
+    // as YYYY-MM-DD strings from the frontend filter UI.
+    if (req.query.from || req.query.to) {
+      where.createdAt = {};
+      if (req.query.from) where.createdAt.gte = new Date(req.query.from);
+      if (req.query.to) {
+        // End of day for the `to` value so the user's selection is inclusive.
+        const to = new Date(req.query.to);
+        to.setHours(23, 59, 59, 999);
+        where.createdAt.lte = to;
+      }
+    }
+
+    // Search across reference + guest name + guest email. Case-insensitive
+    // substring match. We OR the four fields together so a single search
+    // term ("ahmed" or "NZR-A3BX" or "ahmed@gmail.com") finds matches in
+    // any of them. Prisma's `mode: "insensitive"` requires Postgres which
+    // we already use, so this is safe.
+    const q = (req.query.search || req.query.q || "").trim();
+    if (q) {
+      where.OR = [
+        { reference:       { contains: q, mode: "insensitive" } },
+        { guestFirstName:  { contains: q, mode: "insensitive" } },
+        { guestLastName:   { contains: q, mode: "insensitive" } },
+        { guestEmail:      { contains: q, mode: "insensitive" } },
+      ];
+    }
 
     const [bookings, total] = await Promise.all([
       prisma.booking.findMany({
