@@ -11,7 +11,7 @@ const prisma = require("../utils/prisma");
 const { requireAuth, requireAdmin } = require("../middleware/auth");
 const { formatHotel } = require("../utils/helpers");
 const { TAG_KEYS } = require("../utils/tags");
-const { uploadHotelPhoto, deleteHotelPhoto, isR2Configured } = require("../utils/r2");
+const { uploadHotelPhoto, uploadRoomPhoto, deleteHotelPhoto, deletePhotoByUrl, isR2Configured } = require("../utils/r2");
 
 // In-memory upload — files are streamed straight to R2, never touch disk.
 // Limit 8MB per file to keep uploads snappy and within R2 free-tier sanity.
@@ -311,6 +311,101 @@ router.delete("/rooms/:roomId", async (req, res, next) => {
       data: { isActive: false },
     });
     res.json({ message: "Room deactivated" });
+  } catch (err) { next(err); }
+});
+
+// ---------------------------------------------------------------------------
+// ROOM PHOTOS
+// ---------------------------------------------------------------------------
+// Room photos live in their own table (RoomPhoto in schema.prisma) and are
+// stored in R2 nested under their parent hotel for clean prefix-based deletion
+// if a hotel ever needs to be wiped wholesale.
+
+// POST /api/admin/rooms/:roomId/photos — add a photo by URL
+// Used when the photo already lives somewhere on the web (e.g. partner sent
+// a Cloudinary link). We just record the URL; no R2 upload happens.
+router.post("/rooms/:roomId/photos", async (req, res, next) => {
+  try {
+    const { url } = req.body;
+    if (!url) return res.status(400).json({ error: "Photo url required" });
+    const room = await prisma.room.findUnique({
+      where: { id: req.params.roomId },
+      select: { id: true },
+    });
+    if (!room) return res.status(404).json({ error: "Room not found" });
+
+    const count = await prisma.roomPhoto.count({ where: { roomId: room.id } });
+    const photo = await prisma.roomPhoto.create({
+      data: { roomId: room.id, url, sortOrder: count },
+    });
+    res.status(201).json({ data: photo, message: "Room photo added" });
+  } catch (err) { next(err); }
+});
+
+// POST /api/admin/rooms/:roomId/photos/upload — upload a real file to R2
+// multipart/form-data with field "photo". Mirrors the hotel-photo upload
+// flow but stores under hotels/{slug}/rooms/{roomId}/ in R2.
+router.post("/rooms/:roomId/photos/upload", upload.single("photo"), async (req, res, next) => {
+  try {
+    if (!isR2Configured()) {
+      return res.status(503).json({
+        error: "Photo upload is not configured on this server. Set R2_* env vars on the backend.",
+      });
+    }
+    if (!req.file) {
+      return res.status(400).json({ error: "No file received. Field must be named 'photo'." });
+    }
+    // Look up the room AND its hotel's slug. We nest room photos under the
+    // hotel folder in R2 so a future "delete hotel" cleanup can wipe with
+    // one prefix delete.
+    const room = await prisma.room.findUnique({
+      where: { id: req.params.roomId },
+      select: { id: true, hotel: { select: { slug: true } } },
+    });
+    if (!room) return res.status(404).json({ error: "Room not found" });
+
+    const { url } = await uploadRoomPhoto(
+      req.file.buffer,
+      req.file.mimetype,
+      room.hotel.slug,
+      room.id,
+    );
+
+    const count = await prisma.roomPhoto.count({ where: { roomId: room.id } });
+    const photo = await prisma.roomPhoto.create({
+      data: { roomId: room.id, url, sortOrder: count },
+    });
+    res.status(201).json({ data: photo, message: "Room photo uploaded" });
+  } catch (err) {
+    // multer file-too-large error has a specific code
+    if (err && err.code === "LIMIT_FILE_SIZE") {
+      return res.status(413).json({ error: "Image is too large. Max 8 MB." });
+    }
+    // surface the R2 module's clear errors directly to the client
+    if (err && typeof err.message === "string" && (
+      err.message.includes("Unsupported image type") ||
+      err.message.includes("R2 storage is not configured")
+    )) {
+      return res.status(400).json({ error: err.message });
+    }
+    next(err);
+  }
+});
+
+// DELETE /api/admin/room-photos/:photoId — remove a room photo (DB + R2)
+// Path intentionally distinct from /admin/photos/:photoId (which is for
+// hotel-level photos) so the two are routed unambiguously.
+router.delete("/room-photos/:photoId", async (req, res, next) => {
+  try {
+    const photo = await prisma.roomPhoto.findUnique({
+      where: { id: req.params.photoId },
+    });
+    if (photo) {
+      // fire-and-forget R2 delete: don't block the API on storage cleanup
+      deletePhotoByUrl(photo.url).catch(() => {});
+      await prisma.roomPhoto.delete({ where: { id: req.params.photoId } });
+    }
+    res.json({ message: "Room photo removed" });
   } catch (err) { next(err); }
 });
 
