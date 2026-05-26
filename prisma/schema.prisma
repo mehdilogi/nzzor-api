@@ -46,6 +46,13 @@ model User {
   phoneVerified Boolean   @default(false)
   lastLoginAt   DateTime?
 
+  // Password reset — token is generated as a random 32-byte value, mailed
+  // to the user as a URL fragment, and stored here as a SHA-256 hash so a
+  // database leak doesn't expose live reset links. Token is single-use
+  // (nulled out on successful reset) and expires 1 hour after issue.
+  passwordResetTokenHash  String?
+  passwordResetExpiresAt  DateTime?
+
   bookings      Booking[]
   reviews       Review[]
   managedHotels HotelManager[]

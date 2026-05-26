@@ -239,10 +239,146 @@ async function sendBookingCancelled(booking, lang = "fr") {
   return renderAndSend({ variant: "cancelled", booking, subject, lang });
 }
 
+// =============================================================================
+// PASSWORD RESET EMAIL
+// -----------------------------------------------------------------------------
+// Not a booking email — different template, different audience (user, not
+// guest), different urgency. Inlined HTML rather than reusing the booking
+// React Email component because the booking template assumes booking data
+// shape (reference, hotel, dates) we don't have here.
+//
+// Subject and body are trilingual via a small inline map. We don't pull
+// from emailStrings.js because those keys are booking-shaped — the simpler
+// inline map below stays maintainable for the 6 strings we need.
+// =============================================================================
+
+const RESET_COPY = {
+  en: {
+    subject: "Reset your Nzzor password",
+    preheader: "We received a request to reset your password.",
+    headline: (name) => `Hi ${name || "there"},`,
+    body: "We received a request to reset your Nzzor password. Click the button below to choose a new one. This link expires in 1 hour.",
+    button: "Set a new password",
+    ignored: "If you didn't request this, you can safely ignore this email — your password won't change unless you click the link and choose a new one.",
+    signature: "— The Nzzor team",
+  },
+  fr: {
+    subject: "Réinitialisez votre mot de passe Nzzor",
+    preheader: "Nous avons reçu une demande de réinitialisation de votre mot de passe.",
+    headline: (name) => `Bonjour ${name || ""},`,
+    body: "Nous avons reçu une demande de réinitialisation de votre mot de passe Nzzor. Cliquez sur le bouton ci-dessous pour en choisir un nouveau. Ce lien expire dans 1 heure.",
+    button: "Choisir un nouveau mot de passe",
+    ignored: "Si vous n'êtes pas à l'origine de cette demande, vous pouvez ignorer cet e-mail en toute sécurité — votre mot de passe ne sera pas modifié.",
+    signature: "— L'équipe Nzzor",
+  },
+  ar: {
+    subject: "إعادة تعيين كلمة مرور Nzzor الخاصة بك",
+    preheader: "تلقينا طلبًا لإعادة تعيين كلمة المرور الخاصة بك.",
+    headline: (name) => `مرحبًا ${name || ""}،`,
+    body: "تلقينا طلبًا لإعادة تعيين كلمة مرور Nzzor الخاصة بك. انقر على الزر أدناه لاختيار كلمة مرور جديدة. ينتهي هذا الرابط خلال ساعة واحدة.",
+    button: "تعيين كلمة مرور جديدة",
+    ignored: "إذا لم تطلب ذلك، يمكنك تجاهل هذه الرسالة بأمان — لن تتغير كلمة المرور الخاصة بك.",
+    signature: "— فريق Nzzor",
+  },
+};
+
+/**
+ * Send a password-reset email with a one-hour link.
+ *
+ * @param {Object} opts
+ * @param {string} opts.to         — recipient email
+ * @param {string} opts.firstName  — for the greeting; optional
+ * @param {string} opts.rawToken   — the un-hashed token (only known here at issue time)
+ * @param {string} opts.lang       — recipient's preferred language
+ */
+async function sendPasswordResetEmail({ to, firstName, rawToken, lang = "fr" }) {
+  if (!resend) {
+    console.log(`[emailService] (disabled) would send password reset to ${to}`);
+    return null;
+  }
+  const copy = RESET_COPY[lang] || RESET_COPY.fr;
+  const url = `${webBaseUrl}/reset-password?token=${encodeURIComponent(rawToken)}`;
+  const isRtl = lang === "ar";
+  const html = renderResetHtml({ copy, url, firstName, isRtl });
+  try {
+    const result = await resend.emails.send({
+      from: fromAddress,
+      to,
+      subject: copy.subject,
+      html,
+      text: `${copy.headline(firstName)}\n\n${copy.body}\n\n${copy.button}: ${url}\n\n${copy.ignored}\n\n${copy.signature}`,
+      tags: [
+        { name: "category", value: "password_reset" },
+        { name: "lang", value: lang },
+      ],
+    });
+    if (result.error) {
+      console.error("[emailService] password reset send failed:", result.error);
+      return null;
+    }
+    return result.data?.id || null;
+  } catch (err) {
+    console.error("[emailService] password reset threw:", err.message);
+    return null;
+  }
+}
+
+// Renders the password-reset email as a minimal HTML doc. Inline styles
+// only — most email clients ignore <style> blocks. Width-locked at 560px
+// with a max-width fallback for narrow mobile clients.
+function renderResetHtml({ copy, url, firstName, isRtl }) {
+  const dir = isRtl ? "rtl" : "ltr";
+  return `<!doctype html>
+<html lang="${isRtl ? "ar" : "en"}" dir="${dir}">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width">
+    <title>${copy.subject}</title>
+  </head>
+  <body style="margin:0;padding:0;background:#FAF8F4;font-family:'Helvetica Neue',Arial,sans-serif;color:#16161A;">
+    <span style="display:none;visibility:hidden;opacity:0;color:transparent;height:0;width:0;overflow:hidden;">${copy.preheader}</span>
+    <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background:#FAF8F4;">
+      <tr>
+        <td align="center" style="padding:32px 16px;">
+          <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="560" style="max-width:560px;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #ececec;">
+            <tr>
+              <td style="padding:32px 36px 16px;border-bottom:1px solid #f0f0f0;">
+                <div style="font-size:13px;font-weight:700;color:#E63946;letter-spacing:0.08em;text-transform:uppercase;">Nzzor</div>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:32px 36px 8px;">
+                <p style="margin:0 0 18px;font-size:16px;line-height:1.5;font-weight:600;">${copy.headline(firstName)}</p>
+                <p style="margin:0 0 24px;font-size:15px;line-height:1.65;color:#3a3a40;">${copy.body}</p>
+                <table role="presentation" cellspacing="0" cellpadding="0" border="0">
+                  <tr>
+                    <td style="border-radius:980px;background:#16161A;">
+                      <a href="${url}" style="display:inline-block;padding:14px 28px;font-size:14.5px;font-weight:700;color:#ffffff;text-decoration:none;border-radius:980px;">${copy.button}</a>
+                    </td>
+                  </tr>
+                </table>
+                <p style="margin:28px 0 0;font-size:12.5px;line-height:1.6;color:#8a8a90;">${copy.ignored}</p>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:24px 36px 32px;border-top:1px solid #f0f0f0;color:#8a8a90;font-size:12px;">
+                ${copy.signature}
+              </td>
+            </tr>
+          </table>
+          <p style="margin:16px 0 0;font-size:11.5px;color:#a3a3a8;">nzzor.com · Operated by Allouni Travel Agency</p>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>`;
+}
+
 module.exports = {
   sendBookingCreated,
   sendBookingConfirmed,
   sendBookingPaid,
   sendBookingRejected,
   sendBookingCancelled,
+  sendPasswordResetEmail,
 };

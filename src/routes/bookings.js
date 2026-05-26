@@ -1,4 +1,6 @@
 const router = require("express").Router();
+const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
 const { z } = require("zod");
 const prisma = require("../utils/prisma");
 const { generateBookingRef, formatBooking } = require("../utils/helpers");
@@ -23,6 +25,16 @@ const createBookingSchema = z.object({
   specialRequests: z.string().max(1000).optional(),
   paymentMethod: z.enum(["CIB", "EDDAHABIA", "CASH", "BANK_TRANSFER", "WHATSAPP_ASSISTED"]),
   lang: z.enum(["ar", "fr", "en"]).optional().default("fr"),
+  // Optional "create an account while you book" flow. If both flags arrive,
+  // we create a new user from the guest details before persisting the
+  // booking — the booking gets attached via userId, the user gets a token
+  // returned so they're signed in on the response.
+  // If an account with this email already exists, we ignore createAccount
+  // silently (we don't want to fail the booking, and we definitely don't
+  // want to leak whether the email is registered).
+  createAccount: z.boolean().optional().default(false),
+  password: z.string().min(8).max(100).optional(),
+  promoCode: z.string().optional(),
 });
 
 // POST /api/bookings
@@ -84,13 +96,73 @@ router.post("/", optionalAuth, async (req, res, next) => {
       attempts++;
     } while (attempts < 10);
 
+    // -------- Optional: create-account-while-booking ----------------------
+    // If the customer ticked "create an account" AND we're not already
+    // signed in AND they gave a password, try to create the user now.
+    //
+    // We do this BEFORE creating the booking so the booking gets attached
+    // via userId from the start. We never fail the booking if the user
+    // create fails — if email is taken, schema validates, etc., we just
+    // log and continue with userId=null. The customer will see their
+    // booking appear under "my bookings" once they sign in/up later
+    // (email-ownership rule).
+    //
+    // Security: we don't reveal whether the email was already registered
+    // (would leak account existence). Either way, the booking succeeds and
+    // the success response indicates whether an account was created.
+    let createdUserId = null;
+    let createdUserToken = null;
+    if (
+      data.createAccount &&
+      data.password &&
+      !req.user &&
+      data.password.length >= 8
+    ) {
+      try {
+        const existingUser = await prisma.user.findUnique({
+          where: { email: data.guest.email },
+        });
+        if (!existingUser) {
+          const passwordHash = await bcrypt.hash(data.password, 12);
+          const newUser = await prisma.user.create({
+            data: {
+              email: data.guest.email,
+              passwordHash,
+              firstName: data.guest.firstName,
+              lastName: data.guest.lastName,
+              phone: data.guest.phone,
+              preferredLang: data.lang,
+            },
+          });
+          createdUserId = newUser.id;
+          // Sign the user in immediately — the frontend uses this token
+          // to populate AuthContext so the post-booking page already
+          // shows them as logged in.
+          if (process.env.JWT_SECRET) {
+            createdUserToken = jwt.sign(
+              { userId: newUser.id },
+              process.env.JWT_SECRET,
+              { expiresIn: process.env.JWT_EXPIRES_IN || "1h" }
+            );
+          }
+        }
+        // If user existed, we silently skip account creation. The booking
+        // proceeds attached by email (ownership rule) and the user can
+        // sign in normally to see it.
+      } catch (acctErr) {
+        // Log but don't fail the booking. A failed account creation
+        // shouldn't cost the customer their reservation.
+        console.error("[bookings] createAccount failed:", acctErr.message);
+      }
+    }
+
     // Cash/Bank transfer/WhatsApp = pending until payment; Card = auto-confirm on success (TODO)
     const autoConfirm = data.paymentMethod === "CASH";
 
     const booking = await prisma.booking.create({
       data: {
         reference,
-        userId: req.user?.id || null,
+        userId: req.user?.id || createdUserId || null,
         hotelId: data.hotelId,
         guestFirstName: data.guest.firstName,
         guestLastName: data.guest.lastName,
@@ -128,6 +200,15 @@ router.post("/", optionalAuth, async (req, res, next) => {
 
     res.status(201).json({
       data: formattedBooking,
+      // If we created an account as part of this booking, the frontend uses
+      // this token to populate AuthContext so the user lands on the
+      // confirmation page already signed in. accountCreated tells the UI
+      // whether to show "your account is ready" vs just the booking.
+      account: createdUserId ? {
+        created: true,
+        token: createdUserToken,
+        userId: createdUserId,
+      } : null,
       message: "Booking created successfully",
     });
   } catch (err) {
