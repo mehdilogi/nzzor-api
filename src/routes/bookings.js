@@ -4,6 +4,7 @@ const prisma = require("../utils/prisma");
 const { generateBookingRef, formatBooking } = require("../utils/helpers");
 const { optionalAuth } = require("../middleware/auth");
 const bookingService = require("../services/bookingService");
+const { validateBookingDates } = require("../utils/dates");
 
 const createBookingSchema = z.object({
   hotelId: z.string().uuid(),
@@ -29,21 +30,23 @@ router.post("/", optionalAuth, async (req, res, next) => {
   try {
     const data = createBookingSchema.parse(req.body);
 
+    // Validate date logic using ALGERIA local time as the reference. The
+    // previous implementation used the server's UTC `new Date()`, which on
+    // Railway US-East could disagree with Algiers by 8 hours and reject
+    // legitimate same-day bookings made late in the Algeria evening.
+    // The dates util returns a structured error code so the frontend can
+    // localize the message — we forward both the code and a fallback message.
+    const dateError = validateBookingDates(data.checkIn, data.checkOut);
+    if (dateError) {
+      return res.status(400).json({
+        error: dateError.message,
+        code: dateError.code,
+      });
+    }
+
     const checkIn = new Date(data.checkIn);
     const checkOut = new Date(data.checkOut);
-    const now = new Date();
-
-    if (checkIn < new Date(now.toDateString())) {
-      return res.status(400).json({ error: "Check-in date must be today or in the future" });
-    }
-    if (checkOut <= checkIn) {
-      return res.status(400).json({ error: "Check-out must be after check-in" });
-    }
-
     const nights = Math.ceil((checkOut - checkIn) / (1000 * 60 * 60 * 24));
-    if (nights > 30) {
-      return res.status(400).json({ error: "Maximum stay is 30 nights" });
-    }
 
     const hotel = await prisma.hotel.findUnique({
       where: { id: data.hotelId },
