@@ -338,32 +338,71 @@ router.get("/users", async (req, res, next) => {
           isActive: true,
           lastLoginAt: true,
           createdAt: true,
-          // _count gives us aggregate booking count without loading them
-          _count: { select: { bookings: true } },
         },
       }),
       prisma.user.count({ where }),
     ]);
 
-    // Compute lifetime revenue per user. We do this in a separate batched
-    // query so the main user list stays fast — Prisma doesn't easily express
-    // "sum bookings.total grouped by userId" as part of findMany.
+    // ---- Booking aggregates per user ---------------------------------------
+    // We MUST count via the email-ownership rule that the detail endpoint
+    // and the /account/bookings endpoint use: a booking belongs to a user
+    // if `userId === user.id` OR `guestEmail === user.email` (case-
+    // insensitive). The previous implementation used `_count: { bookings }`
+    // which only counts FK-linked bookings — that misses every guest-
+    // checkout booking the user made BEFORE signing up. Result: list said
+    // "0 bookings" for a user whose detail panel correctly showed 8.
+    //
+    // Strategy: fetch all bookings that match EITHER condition in a single
+    // query, then aggregate in JS by user. For the typical admin view (~25
+    // users per page) this is fast and avoids Prisma's lack of complex
+    // groupBy support for OR-joined relationships.
     const userIds = users.map((u) => u.id);
+    const userEmails = users.map((u) => (u.email || "").toLowerCase());
+    let bookingsCountByUser = {};
     let revenueByUser = {};
     if (userIds.length > 0) {
-      const grouped = await prisma.booking.groupBy({
-        by: ["userId"],
+      // Pull just the fields we need (no rooms or hotels) to keep it light.
+      // We project guestEmail and userId so we can match each booking back
+      // to its user in JS. `mode: insensitive` matches Postgres ILIKE, which
+      // is what we want — emails are case-insensitive identifiers.
+      const matching = await prisma.booking.findMany({
         where: {
-          userId: { in: userIds },
-          // Only count confirmed/completed bookings as "revenue" — pending
-          // and cancelled bookings shouldn't pad the lifetime spend metric.
-          status: { in: ["CONFIRMED", "COMPLETED"] },
+          OR: [
+            { userId: { in: userIds } },
+            { guestEmail: { in: userEmails, mode: "insensitive" } },
+          ],
         },
-        _sum: { total: true },
+        select: {
+          userId: true,
+          guestEmail: true,
+          status: true,
+          total: true,
+        },
       });
-      revenueByUser = Object.fromEntries(
-        grouped.map((g) => [g.userId, Number(g._sum.total || 0)])
+
+      // Build email → userId reverse lookup so we can match guest bookings
+      // back to the right user even when userId is null.
+      const emailToUserId = Object.fromEntries(
+        users.map((u) => [(u.email || "").toLowerCase(), u.id])
       );
+
+      for (const b of matching) {
+        const uid =
+          b.userId && userIds.includes(b.userId)
+            ? b.userId
+            : emailToUserId[(b.guestEmail || "").toLowerCase()];
+        if (!uid) continue;
+
+        // All bookings count toward bookingsCount (regardless of status).
+        bookingsCountByUser[uid] = (bookingsCountByUser[uid] || 0) + 1;
+
+        // Only confirmed/completed bookings count toward lifetime revenue —
+        // pending bookings haven't been paid, cancelled/rejected don't
+        // belong in spend totals.
+        if (b.status === "CONFIRMED" || b.status === "COMPLETED") {
+          revenueByUser[uid] = (revenueByUser[uid] || 0) + Number(b.total || 0);
+        }
+      }
     }
 
     const data = users.map((u) => ({
@@ -377,7 +416,7 @@ router.get("/users", async (req, res, next) => {
       isActive: u.isActive,
       lastLoginAt: u.lastLoginAt,
       createdAt: u.createdAt,
-      bookingsCount: u._count.bookings,
+      bookingsCount: bookingsCountByUser[u.id] || 0,
       lifetimeRevenue: revenueByUser[u.id] || 0,
     }));
 

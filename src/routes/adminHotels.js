@@ -11,7 +11,7 @@ const prisma = require("../utils/prisma");
 const { requireAuth, requireAdmin } = require("../middleware/auth");
 const { formatHotel } = require("../utils/helpers");
 const { TAG_KEYS } = require("../utils/tags");
-const { uploadHotelPhoto, uploadRoomPhoto, deleteHotelPhoto, deletePhotoByUrl, isR2Configured } = require("../utils/r2");
+const { uploadHotelPhoto, deleteHotelPhoto, isR2Configured } = require("../utils/r2");
 
 // In-memory upload — files are streamed straight to R2, never touch disk.
 // Limit 8MB per file to keep uploads snappy and within R2 free-tier sanity.
@@ -78,11 +78,31 @@ router.get("/hotels", async (req, res, next) => {
 });
 
 // GET /api/admin/hotels/:id — single hotel (admin view, raw-ish)
+//
+// By default, inactive (soft-deleted) rooms are EXCLUDED from the response.
+// This matches the admin's mental model: when they "Remove" a room, they
+// expect it to stop appearing in the editor. The room row is preserved in
+// the DB so existing bookings keep their FK reference, but the admin
+// doesn't see it unless they pass `?includeInactive=true` (reserved for a
+// future "show archived rooms" toggle).
 router.get("/hotels/:id", async (req, res, next) => {
   try {
+    const includeInactive = req.query.includeInactive === "true";
+    const include = includeInactive
+      ? HOTEL_INCLUDE
+      : {
+          ...HOTEL_INCLUDE,
+          // Override the rooms include with a where clause filtering to
+          // active only. Photos and amenities are unaffected.
+          rooms: {
+            where: { isActive: true },
+            orderBy: { sortOrder: "asc" },
+            include: { photos: true },
+          },
+        };
     const hotel = await prisma.hotel.findUnique({
       where: { id: req.params.id },
-      include: HOTEL_INCLUDE,
+      include,
     });
     if (!hotel) return res.status(404).json({ error: "Hotel not found" });
     res.json({ data: hotel });
@@ -233,6 +253,11 @@ router.post("/hotels/:id/photos/upload", upload.single("photo"), async (req, res
 });
 
 // DELETE /api/admin/photos/:photoId — also remove from R2 if it's our file
+//
+// If the deleted photo was the primary, we promote the next-oldest photo
+// to primary so the hotel never ends up with photos but no primary set.
+// (The frontend uses primaryPhoto as the thumbnail in hotel cards; without
+// one, the card shows "No photo" — a degraded experience.)
 router.delete("/photos/:photoId", async (req, res, next) => {
   try {
     const photo = await prisma.hotelPhoto.findUnique({
@@ -242,8 +267,63 @@ router.delete("/photos/:photoId", async (req, res, next) => {
       // fire-and-forget R2 delete: don't block the API on storage cleanup
       deleteHotelPhoto(photo.url).catch(() => {});
       await prisma.hotelPhoto.delete({ where: { id: req.params.photoId } });
+
+      // Promote a successor if we deleted the primary. We pick the
+      // remaining photo with the lowest sortOrder (i.e. the oldest in the
+      // gallery, after sorting). If no photos remain, nothing to do.
+      if (photo.isPrimary) {
+        const successor = await prisma.hotelPhoto.findFirst({
+          where: { hotelId: photo.hotelId },
+          orderBy: { sortOrder: "asc" },
+        });
+        if (successor) {
+          await prisma.hotelPhoto.update({
+            where: { id: successor.id },
+            data: { isPrimary: true },
+          });
+        }
+      }
     }
     res.json({ message: "Photo removed" });
+  } catch (err) { next(err); }
+});
+
+// PATCH /api/admin/photos/:photoId — update a photo's properties
+//
+// Currently supports `isPrimary: true` to make this photo the new primary
+// (clearing the flag on all others in the same hotel). Wrapped in a
+// transaction so we never end up with two primaries or zero primaries.
+router.patch("/photos/:photoId", async (req, res, next) => {
+  try {
+    const { isPrimary } = req.body || {};
+
+    if (isPrimary === true) {
+      const photo = await prisma.hotelPhoto.findUnique({
+        where: { id: req.params.photoId },
+        select: { id: true, hotelId: true },
+      });
+      if (!photo) return res.status(404).json({ error: "Photo not found" });
+
+      // Transaction: clear flag on all sibling photos, then set on this one.
+      // Doing both inside a single transaction prevents a window where the
+      // hotel has zero primary photos.
+      await prisma.$transaction([
+        prisma.hotelPhoto.updateMany({
+          where: { hotelId: photo.hotelId },
+          data: { isPrimary: false },
+        }),
+        prisma.hotelPhoto.update({
+          where: { id: photo.id },
+          data: { isPrimary: true },
+        }),
+      ]);
+      return res.json({ message: "Primary photo updated" });
+    }
+
+    // No supported operation matched.
+    return res.status(400).json({
+      error: "Nothing to update. Supported: { isPrimary: true }",
+    });
   } catch (err) { next(err); }
 });
 
@@ -299,113 +379,50 @@ router.put("/rooms/:roomId", async (req, res, next) => {
 });
 
 // DELETE /api/admin/rooms/:roomId
+// DELETE /api/admin/rooms/:roomId — smart delete
+//
+// Tries to hard-delete the room. If the room has bookings (historical,
+// current, or pending) that reference it via the BookingRoom join table,
+// we CAN'T hard-delete without violating the FK constraint — Prisma
+// will throw P2003. In that case we fall back to a soft-delete
+// (isActive: false) so the room disappears from the admin editor (the
+// detail endpoint filters inactive rooms by default) but bookings keep
+// their FK reference intact.
+//
+// The response includes `deleteMode: "hard" | "soft"` so the frontend
+// can show a different message if it wants to.
 router.delete("/rooms/:roomId", async (req, res, next) => {
   try {
-    const hard = req.query.hard === "true";
-    if (hard) {
+    // First check if any bookings reference this room. If yes, we know
+    // hard delete will fail before we try it, and we can give a clearer
+    // message than the FK-constraint error.
+    const bookingRefs = await prisma.bookingRoom.count({
+      where: { roomId: req.params.roomId },
+    });
+
+    if (bookingRefs === 0) {
+      // Safe to hard delete — no booking references exist.
       await prisma.room.delete({ where: { id: req.params.roomId } });
-      return res.json({ message: "Room permanently deleted" });
+      return res.json({
+        message: "Room deleted",
+        deleteMode: "hard",
+        bookingRefs: 0,
+      });
     }
+
+    // Bookings reference this room — soft-delete instead. The room row
+    // stays in the database with isActive=false so the FK constraint
+    // is preserved. The admin editor's detail endpoint filters inactive
+    // rooms out of the rooms list by default (see /hotels/:id).
     await prisma.room.update({
       where: { id: req.params.roomId },
       data: { isActive: false },
     });
-    res.json({ message: "Room deactivated" });
-  } catch (err) { next(err); }
-});
-
-// ---------------------------------------------------------------------------
-// ROOM PHOTOS
-// ---------------------------------------------------------------------------
-// Room photos live in their own table (RoomPhoto in schema.prisma) and are
-// stored in R2 nested under their parent hotel for clean prefix-based deletion
-// if a hotel ever needs to be wiped wholesale.
-
-// POST /api/admin/rooms/:roomId/photos — add a photo by URL
-// Used when the photo already lives somewhere on the web (e.g. partner sent
-// a Cloudinary link). We just record the URL; no R2 upload happens.
-router.post("/rooms/:roomId/photos", async (req, res, next) => {
-  try {
-    const { url } = req.body;
-    if (!url) return res.status(400).json({ error: "Photo url required" });
-    const room = await prisma.room.findUnique({
-      where: { id: req.params.roomId },
-      select: { id: true },
+    res.json({
+      message: `Room archived (${bookingRefs} booking${bookingRefs === 1 ? "" : "s"} reference it, so it can't be permanently deleted)`,
+      deleteMode: "soft",
+      bookingRefs,
     });
-    if (!room) return res.status(404).json({ error: "Room not found" });
-
-    const count = await prisma.roomPhoto.count({ where: { roomId: room.id } });
-    const photo = await prisma.roomPhoto.create({
-      data: { roomId: room.id, url, sortOrder: count },
-    });
-    res.status(201).json({ data: photo, message: "Room photo added" });
-  } catch (err) { next(err); }
-});
-
-// POST /api/admin/rooms/:roomId/photos/upload — upload a real file to R2
-// multipart/form-data with field "photo". Mirrors the hotel-photo upload
-// flow but stores under hotels/{slug}/rooms/{roomId}/ in R2.
-router.post("/rooms/:roomId/photos/upload", upload.single("photo"), async (req, res, next) => {
-  try {
-    if (!isR2Configured()) {
-      return res.status(503).json({
-        error: "Photo upload is not configured on this server. Set R2_* env vars on the backend.",
-      });
-    }
-    if (!req.file) {
-      return res.status(400).json({ error: "No file received. Field must be named 'photo'." });
-    }
-    // Look up the room AND its hotel's slug. We nest room photos under the
-    // hotel folder in R2 so a future "delete hotel" cleanup can wipe with
-    // one prefix delete.
-    const room = await prisma.room.findUnique({
-      where: { id: req.params.roomId },
-      select: { id: true, hotel: { select: { slug: true } } },
-    });
-    if (!room) return res.status(404).json({ error: "Room not found" });
-
-    const { url } = await uploadRoomPhoto(
-      req.file.buffer,
-      req.file.mimetype,
-      room.hotel.slug,
-      room.id,
-    );
-
-    const count = await prisma.roomPhoto.count({ where: { roomId: room.id } });
-    const photo = await prisma.roomPhoto.create({
-      data: { roomId: room.id, url, sortOrder: count },
-    });
-    res.status(201).json({ data: photo, message: "Room photo uploaded" });
-  } catch (err) {
-    // multer file-too-large error has a specific code
-    if (err && err.code === "LIMIT_FILE_SIZE") {
-      return res.status(413).json({ error: "Image is too large. Max 8 MB." });
-    }
-    // surface the R2 module's clear errors directly to the client
-    if (err && typeof err.message === "string" && (
-      err.message.includes("Unsupported image type") ||
-      err.message.includes("R2 storage is not configured")
-    )) {
-      return res.status(400).json({ error: err.message });
-    }
-    next(err);
-  }
-});
-
-// DELETE /api/admin/room-photos/:photoId — remove a room photo (DB + R2)
-// Path intentionally distinct from /admin/photos/:photoId (which is for
-// hotel-level photos) so the two are routed unambiguously.
-router.delete("/room-photos/:photoId", async (req, res, next) => {
-  try {
-    const photo = await prisma.roomPhoto.findUnique({
-      where: { id: req.params.photoId },
-    });
-    if (photo) {
-      // fire-and-forget R2 delete: don't block the API on storage cleanup
-      deletePhotoByUrl(photo.url).catch(() => {});
-      await prisma.roomPhoto.delete({ where: { id: req.params.photoId } });
-    }
-    res.json({ message: "Room photo removed" });
   } catch (err) { next(err); }
 });
 
