@@ -290,4 +290,150 @@ router.patch("/bookings/:id/payment", async (req, res, next) => {
   }
 });
 
+// =============================================================================
+// CUSTOMER USERS — admin view of registered customer accounts
+// -----------------------------------------------------------------------------
+// Read-only for v1. List has search, pagination, and aggregates (booking
+// count, lifetime spend). Detail includes the user's full booking history.
+//
+// We intentionally do NOT expose: password hashes, password reset tokens,
+// IP/user-agent metadata, or audit fields beyond createdAt/lastLoginAt.
+// Destructive actions (delete, disable, edit) are deferred to a future
+// wave when we have a clear policy + audit logging.
+// =============================================================================
+router.get("/users", async (req, res, next) => {
+  try {
+    const { skip, take, page, limit } = paginate(req.query);
+
+    // Filter to CUSTOMER role only. The User table also holds ADMIN and
+    // hotel-manager accounts which shouldn't show in the customer list.
+    const where = { role: "CUSTOMER" };
+
+    // Search across name + email + phone, case-insensitive.
+    const q = (req.query.search || req.query.q || "").trim();
+    if (q) {
+      where.OR = [
+        { email:     { contains: q, mode: "insensitive" } },
+        { firstName: { contains: q, mode: "insensitive" } },
+        { lastName:  { contains: q, mode: "insensitive" } },
+        { phone:     { contains: q, mode: "insensitive" } },
+      ];
+    }
+
+    const [users, total] = await Promise.all([
+      prisma.user.findMany({
+        where,
+        orderBy: { createdAt: "desc" },
+        skip, take,
+        // Project only fields we want to surface — never select
+        // passwordHash, passwordResetTokenHash, or passwordResetExpiresAt.
+        select: {
+          id: true,
+          email: true,
+          firstName: true,
+          lastName: true,
+          phone: true,
+          preferredLang: true,
+          emailVerified: true,
+          isActive: true,
+          lastLoginAt: true,
+          createdAt: true,
+          // _count gives us aggregate booking count without loading them
+          _count: { select: { bookings: true } },
+        },
+      }),
+      prisma.user.count({ where }),
+    ]);
+
+    // Compute lifetime revenue per user. We do this in a separate batched
+    // query so the main user list stays fast — Prisma doesn't easily express
+    // "sum bookings.total grouped by userId" as part of findMany.
+    const userIds = users.map((u) => u.id);
+    let revenueByUser = {};
+    if (userIds.length > 0) {
+      const grouped = await prisma.booking.groupBy({
+        by: ["userId"],
+        where: {
+          userId: { in: userIds },
+          // Only count confirmed/completed bookings as "revenue" — pending
+          // and cancelled bookings shouldn't pad the lifetime spend metric.
+          status: { in: ["CONFIRMED", "COMPLETED"] },
+        },
+        _sum: { total: true },
+      });
+      revenueByUser = Object.fromEntries(
+        grouped.map((g) => [g.userId, Number(g._sum.total || 0)])
+      );
+    }
+
+    const data = users.map((u) => ({
+      id: u.id,
+      email: u.email,
+      firstName: u.firstName,
+      lastName: u.lastName,
+      phone: u.phone,
+      preferredLang: u.preferredLang,
+      emailVerified: u.emailVerified,
+      isActive: u.isActive,
+      lastLoginAt: u.lastLoginAt,
+      createdAt: u.createdAt,
+      bookingsCount: u._count.bookings,
+      lifetimeRevenue: revenueByUser[u.id] || 0,
+    }));
+
+    res.json({
+      data,
+      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    });
+  } catch (err) { next(err); }
+});
+
+router.get("/users/:id", async (req, res, next) => {
+  try {
+    const lang = req.query.lang || "en";
+
+    const user = await prisma.user.findUnique({
+      where: { id: req.params.id },
+      select: {
+        id: true,
+        email: true,
+        firstName: true,
+        lastName: true,
+        phone: true,
+        preferredLang: true,
+        emailVerified: true,
+        phoneVerified: true,
+        isActive: true,
+        lastLoginAt: true,
+        createdAt: true,
+        role: true,
+      },
+    });
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    // Fetch the user's bookings. We use the same OR rule that account.js
+    // uses for the customer-facing /account/bookings endpoint — userId
+    // match OR email match — so guest bookings made before signup also
+    // appear under the user's history.
+    const bookings = await prisma.booking.findMany({
+      where: {
+        OR: [
+          { userId: user.id },
+          { guestEmail: { equals: user.email, mode: "insensitive" } },
+        ],
+      },
+      include: { hotel: true, rooms: { include: { room: true } } },
+      orderBy: { createdAt: "desc" },
+      take: 100, // generous cap — most users will have <10
+    });
+
+    res.json({
+      data: {
+        ...user,
+        bookings: bookings.map((b) => formatBooking(b, lang)),
+      },
+    });
+  } catch (err) { next(err); }
+});
+
 module.exports = router;
