@@ -343,7 +343,9 @@ function renderResetHtml({ copy, url, firstName, isRtl }) {
           <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="560" style="max-width:560px;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #ececec;">
             <tr>
               <td style="padding:32px 36px 16px;border-bottom:1px solid #f0f0f0;">
-                <div style="font-size:13px;font-weight:700;color:#E63946;letter-spacing:0.08em;text-transform:uppercase;">Nzzor</div>
+                <div style="font-size:13px;font-weight:700;color:#16161A;letter-spacing:0.08em;text-transform:uppercase;">
+                  <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#E63946;margin-right:10px;vertical-align:middle;"></span>Nzzor
+                </div>
               </td>
             </tr>
             <tr>
