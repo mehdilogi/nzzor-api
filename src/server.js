@@ -16,6 +16,8 @@ const adminRoutes = require("./routes/admin");
 const adminHotelRoutes = require("./routes/adminHotels");
 const partnerRoutes = require("./routes/partner");
 const accountRoutes = require("./routes/account");
+const analyticsRoutes = require("./routes/analytics");
+const adminAnalyticsRoutes = require("./routes/adminAnalytics");
 const { errorHandler } = require("./middleware/errorHandler");
 
 const app = express();
@@ -33,6 +35,12 @@ const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 200,
   message: { error: "Too many requests, please try again later" },
+  // The analytics beacon is hit on every page view (potentially many times
+  // per minute per user during normal browsing). It has its own dedicated
+  // rate limit inside routes/analytics.js (200/min per IP, much more
+  // permissive than the global 200/15min). Excluding it here prevents the
+  // beacon from cannibalising the user's regular API budget.
+  skip: (req) => req.path.startsWith("/api/analytics"),
 });
 app.use("/api/", limiter);
 
@@ -50,6 +58,11 @@ app.use("/api/admin", adminRoutes);
 app.use("/api/admin", adminHotelRoutes);
 app.use("/api/partner", partnerRoutes);
 app.use("/api/account", accountRoutes);
+// Analytics — public beacon (no auth) + admin dashboard endpoints (auth is
+// enforced inside the admin analytics router via router.use(requireAuth,
+// requireAdmin), matching the existing /api/admin convention).
+app.use("/api/analytics", analyticsRoutes);
+app.use("/api/admin/analytics", adminAnalyticsRoutes);
 
 app.get("/api/health", (req, res) => {
   res.json({
@@ -87,6 +100,11 @@ app.get("/api", (req, res) => {
       admin: {
         dashboard: "GET /api/admin/dashboard",
         bookings: "GET /api/admin/bookings",
+        analytics: "GET /api/admin/analytics/overview",
+      },
+      analytics: {
+        beacon: "POST /api/analytics/beacon",
+        event: "POST /api/analytics/event",
       },
     },
   });
@@ -107,4 +125,16 @@ app.listen(PORT, () => {
      API docs: http://localhost:${PORT}/api
   ===========================================
   `);
+
+  // Schedule the nightly analytics rollup. Runs at 02:00 UTC (03:00
+  // Algiers). Aggregates yesterday's pageviews into DailyStats, backfills
+  // any missing days from the last 7, and prunes raw rows older than 90
+  // days. The job is idempotent — multiple runs in the same day produce
+  // identical results, so it's safe even if the server restarts during
+  // execution. Disabled in development to avoid surprising local devs;
+  // manually triggerable via:
+  //   node -e "require('./src/jobs/dailyRollup').runOnce()"
+  if (process.env.NODE_ENV === "production") {
+    require("./jobs/dailyRollup").start();
+  }
 });

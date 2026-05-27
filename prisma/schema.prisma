@@ -450,3 +450,122 @@ model Review {
   @@index([hotelId, isVisible])
   @@map("reviews")
 }
+// =============================================================================
+// ANALYTICS — append the lines below to prisma/schema.prisma
+// =============================================================================
+// Why a single file: Prisma doesn't support multiple schema files in one
+// generate. Copy the content below and paste it at the end of your existing
+// prisma/schema.prisma. After pasting:
+//   npx prisma migrate dev --name add_analytics
+//   npx prisma generate
+//
+// All four tables map to "analytics_*" so they're visually grouped in
+// Prisma Studio without using a separate Postgres schema (which Prisma's
+// support for is awkward in Express setups). If we ever need to move to
+// a separate physical DB, the @@map names make that straightforward.
+// =============================================================================
+
+enum AnalyticsEventType {
+  WHATSAPP_CLICK
+  BOOKING_CTA_CLICK
+  HOTEL_VIEW
+  SIGNUP
+  LOGIN
+  BOOKING_STARTED
+  BOOKING_COMPLETED
+  SEARCH
+}
+
+// Raw pageview events. One row per page load. Retention: 90 days, then
+// aggregated into DailyStats and the raw row is deleted by the cron job.
+model Pageview {
+  id          String   @id @default(uuid())
+  visitorId   String                // 1st-party cookie UUID (anonymous)
+  userId      String?               // Only set when logged in
+  path        String                // /hotels/royal-maqam (no querystring, no domain)
+  fullUrl     String?  @db.Text     // Querystring kept for source attribution analysis
+  referrer    String?  @db.Text     // document.referrer
+  referrerSrc String?               // Classified: "google", "facebook", "direct", "internal", etc.
+  ua          String?  @db.Text     // User-Agent header (truncated to 500 chars on insert)
+  deviceType  String?               // "mobile", "tablet", "desktop", "bot"
+  country     String?               // ISO 3166-1 alpha-2 from CF-IPCountry (e.g. "DZ")
+  ipHash      String?               // SHA256 hash of IP, used for unique-visitor counting without storing PII
+  lang        String?               // Browser language (ar/fr/en)
+  sessionId   String?               // FK to Session — set after server-side bucketing
+  isBot       Boolean  @default(false)
+
+  createdAt   DateTime @default(now())
+
+  @@index([visitorId, createdAt])
+  @@index([sessionId])
+  @@index([createdAt])
+  @@index([path])
+  @@index([country])
+  @@map("analytics_pageviews")
+}
+
+// Sessions cluster pageviews from the same visitor within a 30-minute window.
+// One row per session. Retention: same 90 days (kept in sync with Pageview).
+model Session {
+  id             String    @id @default(uuid())
+  visitorId      String                            // Same cookie UUID as Pageview
+  userId         String?                           // Set if user is logged in at session start
+  startedAt      DateTime  @default(now())
+  endedAt        DateTime                          // Updated as new pageviews arrive
+  pageviewCount  Int       @default(1)
+  entryPath      String                            // First page of the session
+  exitPath       String?                           // Last page of the session
+  country        String?                           // ISO from CF-IPCountry
+  referrerSrc    String?                           // Classified source of the entry pageview
+  deviceType     String?
+  isBot          Boolean   @default(false)
+
+  // The full Pageview history can be reconstructed via Pageview.sessionId
+
+  @@index([visitorId, startedAt])
+  @@index([startedAt])
+  @@index([country])
+  @@map("analytics_sessions")
+}
+
+// Custom events: clicks that matter for the funnel. Cheap and unbounded —
+// kept indefinitely so we can analyze long-term conversion patterns.
+model AnalyticsEvent {
+  id          String              @id @default(uuid())
+  visitorId   String                                  // Same cookie UUID
+  userId      String?
+  sessionId   String?                                 // FK to Session
+  type        AnalyticsEventType
+  path        String                                  // Page where the event fired
+  meta        Json?                                   // Arbitrary payload: { hotelSlug, bookingRef, ... }
+  country     String?
+
+  createdAt   DateTime            @default(now())
+
+  @@index([type, createdAt])
+  @@index([sessionId])
+  @@index([visitorId, createdAt])
+  @@map("analytics_events")
+}
+
+// Daily aggregates — populated by the rollup cron each night. The dashboard
+// reads from here for any range > 7 days. Raw Pageview rows are deleted
+// after 90 days; DailyStats are kept forever.
+model DailyStats {
+  date              DateTime  @id @db.Date           // PK: one row per UTC day, stored as DATE
+  pageviews         Int       @default(0)
+  sessions          Int       @default(0)
+  uniqueVisitors    Int       @default(0)
+  uniqueUsers       Int       @default(0)            // Distinct logged-in userIds
+  bookingsCreated   Int       @default(0)            // Count from Booking table
+  bookingsConfirmed Int       @default(0)
+  avgPageviewsPerSession Float @default(0)
+  topPaths          Json?                            // [{ path, count }, ...] top 10
+  topCountries      Json?                            // [{ country, count }, ...] top 10
+  topReferrerSrcs   Json?                            // [{ src, count }, ...] top 10
+  topDevices        Json?                            // [{ device, count }, ...]
+
+  computedAt        DateTime  @default(now()) @updatedAt
+
+  @@map("analytics_daily_stats")
+}
