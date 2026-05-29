@@ -34,6 +34,12 @@ const React = require("react");
 
 const BookingEmail = require("./emails/BookingEmail");
 
+// Voucher PDF generator. Used to attach the booking voucher to confirmed
+// and paid emails. Lazy-loaded inside renderAndSend so a missing font
+// asset (or any voucher-service error) NEVER blocks the email itself —
+// the email body has all the info; the PDF is convenience.
+const { generateVoucherPdf } = require("./voucherService");
+
 // ---- One-time client init --------------------------------------------------
 const apiKey = process.env.RESEND_API_KEY;
 const fromAddress = process.env.EMAIL_FROM || "Nzzor <bookings@nzzor.com>";
@@ -59,7 +65,7 @@ if (apiKey) {
  * @param {string} opts.lang         — "en" | "fr" | "ar"
  * @returns {Promise<string|null>}
  */
-async function renderAndSend({ variant, booking, subject, lang = "fr" }) {
+async function renderAndSend({ variant, booking, subject, lang = "fr", attachVoucher = false }) {
   if (!resend) {
     console.log(`[emailService] (disabled) would send "${variant}" email for ${booking.reference} to ${booking.guest.email}`);
     return null;
@@ -81,6 +87,27 @@ async function renderAndSend({ variant, booking, subject, lang = "fr" }) {
     // auto-derive this, but giving it explicitly produces cleaner results.
     const text = buildPlainTextFallback({ variant, booking, lang });
 
+    // Voucher PDF attachment. Generated only for variants where the customer
+    // benefits from a downloadable artifact (confirmed, paid). Wrapped in
+    // try/catch so a PDF rendering error NEVER blocks the email body — the
+    // email body has all the info; the PDF is convenience.
+    let attachments;
+    if (attachVoucher) {
+      try {
+        const pdf = await generateVoucherPdf(booking, lang);
+        attachments = [{
+          filename: `nzzor-${booking.reference}.pdf`,
+          content: pdf, // Buffer — Resend accepts Buffer directly
+        }];
+      } catch (voucherErr) {
+        console.error(
+          `[emailService] voucher generation failed for ${variant}/${booking.reference}:`,
+          voucherErr.message
+        );
+        // Continue sending the email without the attachment.
+      }
+    }
+
     const result = await resend.emails.send({
       from: fromAddress,
       to: [booking.guest.email],
@@ -94,6 +121,10 @@ async function renderAndSend({ variant, booking, subject, lang = "fr" }) {
       // Set Reply-To explicitly so customers can reply to bookings@ even if
       // the From address ever changes.
       replyTo: "bookings@nzzor.com",
+      // Only include `attachments` when we actually have one — Resend's
+      // SDK treats empty arrays the same as omitted, but cleaner not to
+      // send the key at all when there's nothing to attach.
+      ...(attachments ? { attachments } : {}),
     });
 
     if (result.error) {
@@ -101,7 +132,11 @@ async function renderAndSend({ variant, booking, subject, lang = "fr" }) {
       return null;
     }
 
-    console.log(`[emailService] sent ${variant} for ${booking.reference} → ${booking.guest.email} (id: ${result.data?.id})`);
+    console.log(
+      `[emailService] sent ${variant} for ${booking.reference} → ${booking.guest.email}` +
+      (attachments ? " (with voucher.pdf)" : "") +
+      ` (id: ${result.data?.id})`
+    );
     return result.data?.id || null;
   } catch (err) {
     // Catch-all — never let an email error propagate to the HTTP response.
@@ -191,7 +226,9 @@ async function sendBookingCreated(booking, lang = "fr") {
 async function sendBookingConfirmed(booking, lang = "fr") {
   const { t } = require("./emailStrings");
   const subject = `${t("variant.confirmed.kicker", lang)} · ${booking.reference}`;
-  return renderAndSend({ variant: "confirmed", booking, subject, lang });
+  // attachVoucher=true: once the booking is CONFIRMED the customer has
+  // something tangible to bring to check-in.
+  return renderAndSend({ variant: "confirmed", booking, subject, lang, attachVoucher: true });
 }
 
 /**
@@ -206,7 +243,9 @@ async function sendBookingConfirmed(booking, lang = "fr") {
 async function sendBookingPaid(booking, lang = "fr") {
   const { t } = require("./emailStrings");
   const subject = `${t("variant.paid.kicker", lang)} · ${booking.reference}`;
-  return renderAndSend({ variant: "paid", booking, subject, lang });
+  // attachVoucher=true: payment receipts are kept by customers for travel
+  // reimbursement / employer expense claims — they want the PDF.
+  return renderAndSend({ variant: "paid", booking, subject, lang, attachVoucher: true });
 }
 
 /**

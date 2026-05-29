@@ -11,6 +11,7 @@ const rateLimit = require("express-rate-limit");
 
 const hotelRoutes = require("./routes/hotels");
 const bookingRoutes = require("./routes/bookings");
+const voucherRoutes = require("./routes/vouchers");
 const authRoutes = require("./routes/auth");
 const adminRoutes = require("./routes/admin");
 const adminHotelRoutes = require("./routes/adminHotels");
@@ -53,6 +54,7 @@ app.use("/api/auth/", authLimiter);
 
 app.use("/api/hotels", hotelRoutes);
 app.use("/api/bookings", bookingRoutes);
+app.use("/api/bookings", voucherRoutes); // voucher PDF download (GET /:reference/voucher.pdf)
 app.use("/api/auth", authRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/admin", adminHotelRoutes);
@@ -91,6 +93,7 @@ app.get("/api", (req, res) => {
         create: "POST /api/bookings",
         get: "GET /api/bookings/:reference",
         cancel: "PATCH /api/bookings/:reference/cancel",
+        voucher: "GET /api/bookings/:reference/voucher.pdf",
       },
       auth: {
         register: "POST /api/auth/register",
