@@ -79,7 +79,10 @@ const hotelSchema = z.object({
   regionFr: z.string().default("").transform(toTitle),
   regionAr: z.string().default("").transform(trimOnly),
   address: z.string().optional(),
-  latitude: z.number().optional(), longitude: z.number().optional(),
+  // .nullable() so the admin can CLEAR a pin (web sends null) — not just .optional(),
+  // which would reject null. Range bounds reject garbage (a longitude of 500, etc.).
+  latitude: z.number().min(-90).max(90).nullable().optional(),
+  longitude: z.number().min(-180).max(180).nullable().optional(),
   checkInTime: z.string().default("14:00"),
   checkOutTime: z.string().default("12:00"),
   cancellationHours: z.number().int().default(48),
