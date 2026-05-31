@@ -27,7 +27,7 @@ const createBookingSchema = z.object({
     phone: z.string().min(5).max(20),
   }),
   specialRequests: z.string().max(1000).optional(),
-  paymentMethod: z.enum(["CIB", "EDDAHABIA", "CASH", "BANK_TRANSFER", "WHATSAPP_ASSISTED"]),
+  paymentMethod: z.enum(["CIB", "EDDAHABIA", "VISA", "MASTERCARD", "CASH", "BANK_TRANSFER", "WHATSAPP_ASSISTED"]),
   lang: z.enum(["ar", "fr", "en"]).optional().default("fr"),
   // Optional "create an account while you book" flow. If both flags arrive,
   // we create a new user from the guest details before persisting the
