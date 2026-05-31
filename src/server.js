@@ -33,6 +33,13 @@ app.use(cors({
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true }));
 
+// Strip invisible Unicode characters (LRM, RLM, ZWSP, BOM, etc.) from all
+// incoming JSON strings. Prevents the "two visually-identical Arabic city
+// names that Postgres treats as different rows" bug that bit us with Setif.
+// See src/middleware/cleanText.js for the full list of stripped code points.
+const { cleanTextMiddleware } = require("./middleware/cleanText");
+app.use(cleanTextMiddleware);
+
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 200,
