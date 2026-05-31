@@ -41,13 +41,43 @@ function slugify(s) {
 // HOTELS
 // ---------------------------------------------------------------------------
 
+// Normalization helpers — applied at the write boundary so that no matter
+// what casing/whitespace the admin form sends, what lands in the DB is
+// always one consistent format. This prevents the class of bug where the
+// same city ends up stored as both "Setif" and "setif" (or with stray
+// whitespace) and the dropdown splits it into two groups, or the city
+// filter — which does WHERE city = ?.toLowerCase() — silently misses rows.
+
+// Lower-cased key form. Used for the `city` field, which is the filter key,
+// not for display. Trims whitespace and collapses internal runs of spaces.
+const toKey = (s) => String(s || "").trim().replace(/\s+/g, " ").toLowerCase();
+
+// Title-case display form. "setif" / "SETIF" / "  Setif  " -> "Setif".
+// Handles multi-word names ("tizi ouzou" -> "Tizi Ouzou") and preserves
+// non-ASCII letters (so accented forms like "Aïn Defla" stay intact).
+const toTitle = (s) => String(s || "")
+  .trim()
+  .replace(/\s+/g, " ")
+  .toLowerCase()
+  .replace(/(^|\s|-)(\S)/g, (_, sep, ch) => sep + ch.toUpperCase());
+
+// Arabic / RTL display fields don't have case — trim only.
+const trimOnly = (s) => String(s || "").trim();
+
 const hotelSchema = z.object({
   nameEn: z.string().min(1), nameFr: z.string().min(1), nameAr: z.string().min(1),
   descEn: z.string().default(""), descFr: z.string().default(""), descAr: z.string().default(""),
   stars: z.number().int().min(1).max(5),
-  city: z.string().min(1),
-  cityEn: z.string().min(1), cityFr: z.string().min(1), cityAr: z.string().min(1),
-  regionEn: z.string().default(""), regionFr: z.string().default(""), regionAr: z.string().default(""),
+  // city is the filter KEY — always lowercase, always trimmed.
+  city: z.string().min(1).transform(toKey),
+  // Display fields: trimmed; Latin scripts get title-cased so the dropdown
+  // groups by a single canonical label instead of "Setif" vs "setif".
+  cityEn: z.string().min(1).transform(toTitle),
+  cityFr: z.string().min(1).transform(toTitle),
+  cityAr: z.string().min(1).transform(trimOnly),
+  regionEn: z.string().default("").transform(toTitle),
+  regionFr: z.string().default("").transform(toTitle),
+  regionAr: z.string().default("").transform(trimOnly),
   address: z.string().optional(),
   latitude: z.number().optional(), longitude: z.number().optional(),
   checkInTime: z.string().default("14:00"),
