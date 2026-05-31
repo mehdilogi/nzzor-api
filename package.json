@@ -15,7 +15,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.658.0",
-    "@prisma/client": "^6.0.0",
+    "@prisma/client": "^6.19.3",
     "@react-email/components": "^0.0.32",
     "@react-email/render": "^1.0.4",
     "arabic-persian-reshaper": "^1.0.1",
@@ -38,6 +38,6 @@
     "zod": "^3.23.0"
   },
   "devDependencies": {
-    "prisma": "^6.0.0"
+    "prisma": "^6.19.3"
   }
 }

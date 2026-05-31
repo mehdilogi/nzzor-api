@@ -6,6 +6,10 @@ const prisma = require("../utils/prisma");
 const { generateBookingRef, formatBooking } = require("../utils/helpers");
 const { optionalAuth } = require("../middleware/auth");
 const bookingService = require("../services/bookingService");
+const {
+  assertAvailableInTransaction,
+  AvailabilityError,
+} = require("../services/availabilityService");
 const { validateBookingDates } = require("../utils/dates");
 
 const createBookingSchema = z.object({
@@ -87,15 +91,6 @@ router.post("/", optionalAuth, async (req, res, next) => {
 
     const total = subtotal;
 
-    let reference;
-    let attempts = 0;
-    do {
-      reference = generateBookingRef();
-      const existing = await prisma.booking.findUnique({ where: { reference } });
-      if (!existing) break;
-      attempts++;
-    } while (attempts < 10);
-
     // -------- Optional: create-account-while-booking ----------------------
     // If the customer ticked "create an account" AND we're not already
     // signed in AND they gave a password, try to create the user now.
@@ -159,36 +154,80 @@ router.post("/", optionalAuth, async (req, res, next) => {
     // Cash/Bank transfer/WhatsApp = pending until payment; Card = auto-confirm on success (TODO)
     const autoConfirm = data.paymentMethod === "CASH";
 
-    const booking = await prisma.booking.create({
-      data: {
-        reference,
-        userId: req.user?.id || createdUserId || null,
-        hotelId: data.hotelId,
-        guestFirstName: data.guest.firstName,
-        guestLastName: data.guest.lastName,
-        guestEmail: data.guest.email,
-        guestPhone: data.guest.phone,
-        specialRequests: data.specialRequests,
-        checkIn,
-        checkOut,
-        nights,
-        subtotal,
-        total,
-        paymentMethod: data.paymentMethod,
-        status: autoConfirm ? "CONFIRMED" : "PENDING",
-        paymentStatus: "PENDING",
-        confirmedAt: autoConfirm ? new Date() : null,
-        source: "website",
-        lang: data.lang,
-        ipAddress: req.ip,
-        userAgent: req.headers["user-agent"],
-        rooms: { create: bookingRooms },
-      },
-      include: {
-        hotel: true,
-        rooms: { include: { room: true } },
-      },
-    });
+    // -------- Atomic: reserve inventory, generate ref, insert booking ----
+    // The transaction ensures NO race condition between two simultaneous
+    // bookings for the last room. assertAvailableInTransaction takes a
+    // row lock on the relevant Room rows; if another transaction has
+    // already taken the inventory, this one sees the updated count and
+    // throws AvailabilityError → 409 to the customer.
+    //
+    // Reference generation runs inside the transaction too — extremely
+    // unlikely to collide (16 million combinations) but cheap insurance.
+    //
+    // Account creation is intentionally OUTSIDE this transaction: it
+    // happens before, has its own error swallow, and a stale createdUserId
+    // attached to a failed booking is harmless (the user can still sign in,
+    // they just don't have the booking attached to their account).
+    let booking;
+    try {
+      booking = await prisma.$transaction(async (tx) => {
+        // Lock-and-check room inventory.
+        await assertAvailableInTransaction(tx, data.rooms, checkIn, checkOut);
+
+        // Generate a unique reference. Inside the transaction so concurrent
+        // bookings can't collide on the reference unique constraint.
+        let reference;
+        let attempts = 0;
+        do {
+          reference = generateBookingRef();
+          const existing = await tx.booking.findUnique({ where: { reference } });
+          if (!existing) break;
+          attempts++;
+        } while (attempts < 10);
+
+        return tx.booking.create({
+          data: {
+            reference,
+            userId: req.user?.id || createdUserId || null,
+            hotelId: data.hotelId,
+            guestFirstName: data.guest.firstName,
+            guestLastName: data.guest.lastName,
+            guestEmail: data.guest.email,
+            guestPhone: data.guest.phone,
+            specialRequests: data.specialRequests,
+            checkIn,
+            checkOut,
+            nights,
+            subtotal,
+            total,
+            paymentMethod: data.paymentMethod,
+            status: autoConfirm ? "CONFIRMED" : "PENDING",
+            paymentStatus: "PENDING",
+            confirmedAt: autoConfirm ? new Date() : null,
+            source: "website",
+            lang: data.lang,
+            ipAddress: req.ip,
+            userAgent: req.headers["user-agent"],
+            rooms: { create: bookingRooms },
+          },
+          include: {
+            hotel: true,
+            rooms: { include: { room: true } },
+          },
+        });
+      });
+    } catch (txErr) {
+      // Availability conflict — turn into a clean 409 with detail per room
+      // so the frontend can highlight "this specific room is sold out".
+      if (txErr instanceof AvailabilityError) {
+        return res.status(409).json({
+          error: txErr.message,
+          code: txErr.code,
+          conflicts: txErr.conflicts,
+        });
+      }
+      throw txErr; // unrelated DB error — let the global handler take it
+    }
 
     const formattedBooking = formatBooking(booking, data.lang);
 

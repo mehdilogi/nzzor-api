@@ -11,6 +11,7 @@ const rateLimit = require("express-rate-limit");
 
 const hotelRoutes = require("./routes/hotels");
 const bookingRoutes = require("./routes/bookings");
+const availabilityRoutes = require("./routes/availability");
 const voucherRoutes = require("./routes/vouchers");
 const authRoutes = require("./routes/auth");
 const adminRoutes = require("./routes/admin");
@@ -55,6 +56,7 @@ app.use("/api/auth/", authLimiter);
 app.use("/api/hotels", hotelRoutes);
 app.use("/api/bookings", bookingRoutes);
 app.use("/api/bookings", voucherRoutes); // voucher PDF download (GET /:reference/voucher.pdf)
+app.use("/api/availability", availabilityRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/admin", adminHotelRoutes);
@@ -94,6 +96,10 @@ app.get("/api", (req, res) => {
         get: "GET /api/bookings/:reference",
         cancel: "PATCH /api/bookings/:reference/cancel",
         voucher: "GET /api/bookings/:reference/voucher.pdf",
+      },
+      availability: {
+        check: "POST /api/availability/check",
+        dates: "GET /api/availability/dates",
       },
       auth: {
         register: "POST /api/auth/register",
@@ -139,5 +145,22 @@ app.listen(PORT, () => {
   //   node -e "require('./src/jobs/dailyRollup').runOnce()"
   if (process.env.NODE_ENV === "production") {
     require("./jobs/dailyRollup").start();
+
+    // Sweep abandoned PENDING bookings every 5 minutes. Without this,
+    // ghosted carts hold inventory forever — real customers would see
+    // "sold out" on rooms that nobody actually paid for. Matches the
+    // 30-minute hold window defined in availabilityService. Manually
+    // triggerable via:
+    //   node -e "require('./src/jobs/expirePendingBookings').expirePendingBookings()"
+    const cron = require("node-cron");
+    const { expirePendingBookings } = require("./jobs/expirePendingBookings");
+    cron.schedule("*/5 * * * *", async () => {
+      try {
+        await expirePendingBookings();
+      } catch (err) {
+        console.error("[expirePending] cron run failed:", err.message);
+      }
+    });
+    console.log("[cron] scheduled expirePendingBookings every 5 minutes");
   }
 });
