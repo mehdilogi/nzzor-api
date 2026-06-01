@@ -59,6 +59,13 @@ const STATUS_EMAIL_RULES = {
     REJECTED: "sendBookingRejected",
     CANCELLED: "sendBookingCancelled",
   },
+  ON_REQUEST: {
+    // The hotel/agency accepted a Sur Demande request -> becomes a real
+    // confirmed booking. Declined -> rejected. Guest can cancel while waiting.
+    CONFIRMED: "sendBookingConfirmed",
+    REJECTED: "sendBookingRejected",
+    CANCELLED: "sendBookingCancelled",
+  },
   CONFIRMED: {
     CANCELLED: "sendBookingCancelled",
     // CONFIRMED → COMPLETED is a quiet transition (cron-driven, no email)
@@ -221,6 +228,29 @@ function notifyBookingCreated(formattedBooking, lang) {
   });
 }
 
+/**
+ * Fire the "request received" email for a new ON_REQUEST (Sur Demande)
+ * booking. Distinct from notifyBookingCreated because the message is
+ * different: the stay is NOT yet confirmed — the hotel/agency will review
+ * and confirm or decline. Falls back to sendBookingCreated if the dedicated
+ * sender isn't defined in emailService (so a missing template degrades
+ * gracefully rather than sending nothing).
+ *
+ * @param {Object} formattedBooking — already-formatted booking object
+ * @param {string} lang             — language for the email
+ */
+function notifyBookingRequested(formattedBooking, lang) {
+  const senderName =
+    typeof emailService.sendBookingRequested === "function"
+      ? "sendBookingRequested"
+      : "sendBookingCreated";
+  fireAndForget(senderName, formattedBooking, lang || "fr", {
+    bookingRef: formattedBooking.reference,
+    transition: "new:on_request",
+    actor: "customer",
+  });
+}
+
 // ---- Internal: fire-and-forget email helper -------------------------------
 //
 // Wraps the email send in:
@@ -255,4 +285,5 @@ module.exports = {
   transitionBookingStatus,
   transitionBookingPayment,
   notifyBookingCreated,
+  notifyBookingRequested,
 };

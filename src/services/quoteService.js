@@ -87,12 +87,16 @@ async function buildQuote(hotel, occupancy, checkIn, checkOut) {
     const a = availByRoom[room.id] || { unitsLeft: 0, totalUnits: room.totalUnits };
     const availability = a.unitsLeft >= roomsCount ? "AVAILABLE" : "ON_REQUEST";
 
-    // Board options for this room. Start from explicit active board rates;
-    // ensure ROOM_ONLY exists as a fallback from basePrice if not priced.
-    const boards = (room.boardRates || []).filter((br) => br.isActive);
+    // Board options for this room. Start from explicit active board rates
+    // with a real positive price (a 0 or blank means "not offered" — it must
+    // never become a bookable "free" option). Ensure ROOM_ONLY exists as a
+    // fallback from basePrice if not otherwise priced.
+    const boards = (room.boardRates || []).filter(
+      (br) => br.isActive && br.price > 0
+    );
     const hasRoomOnly = boards.some((br) => br.board === "ROOM_ONLY");
     const boardList = [...boards];
-    if (!hasRoomOnly) {
+    if (!hasRoomOnly && room.basePrice > 0) {
       boardList.push({ board: "ROOM_ONLY", price: room.basePrice });
     }
 

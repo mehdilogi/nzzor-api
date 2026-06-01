@@ -8,6 +8,7 @@ const { optionalAuth } = require("../middleware/auth");
 const bookingService = require("../services/bookingService");
 const {
   assertAvailableInTransaction,
+  checkAvailability,
   AvailabilityError,
 } = require("../services/availabilityService");
 const { validateBookingDates } = require("../utils/dates");
@@ -17,6 +18,7 @@ const createBookingSchema = z.object({
   rooms: z.array(z.object({
     roomId: z.string().uuid(),
     quantity: z.number().int().min(1).default(1),
+    board: z.enum(["ROOM_ONLY", "BREAKFAST", "HALF_BOARD", "FULL_BOARD", "ALL_INCLUSIVE"]).optional(),
   })).min(1),
   checkIn: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   checkOut: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
@@ -66,7 +68,7 @@ router.post("/", optionalAuth, async (req, res, next) => {
 
     const hotel = await prisma.hotel.findUnique({
       where: { id: data.hotelId },
-      include: { rooms: { where: { isActive: true } } },
+      include: { rooms: { where: { isActive: true }, include: { boardRates: true } } },
     });
     if (!hotel || !hotel.isActive) {
       return res.status(404).json({ error: "Hotel not found" });
@@ -80,12 +82,37 @@ router.post("/", optionalAuth, async (req, res, next) => {
       if (!room) {
         return res.status(400).json({ error: `Room ${roomReq.roomId} not found` });
       }
-      const pricePerNight = room.basePrice;
+      // Price from the chosen board's rate when given; otherwise fall back to
+      // the room's basePrice (room-only / legacy). A board with a stored rate
+      // wins; ROOM_ONLY or no board => basePrice. We re-derive the price
+      // server-side rather than trusting the client — the board is the only
+      // thing the client chooses, never the price.
+      let pricePerNight = room.basePrice;
+      let board = roomReq.board || null;
+      if (board && board !== "ROOM_ONLY") {
+        const rate = (room.boardRates || []).find(
+          (br) => br.board === board && br.isActive && br.price > 0
+        );
+        if (!rate) {
+          return res.status(400).json({
+            error: `Board ${board} is not available for room ${room.id}`,
+            code: "BOARD_NOT_AVAILABLE",
+          });
+        }
+        pricePerNight = rate.price;
+      } else if (board === "ROOM_ONLY") {
+        // An explicit ROOM_ONLY rate may exist; prefer it, else basePrice.
+        const rate = (room.boardRates || []).find(
+          (br) => br.board === "ROOM_ONLY" && br.isActive && br.price > 0
+        );
+        if (rate) pricePerNight = rate.price;
+      }
       subtotal += pricePerNight * nights * roomReq.quantity;
       bookingRooms.push({
         roomId: room.id,
         quantity: roomReq.quantity,
         pricePerNight,
+        board,
       });
     }
 
@@ -154,6 +181,16 @@ router.post("/", optionalAuth, async (req, res, next) => {
     // Cash/Bank transfer/WhatsApp = pending until payment; Card = auto-confirm on success (TODO)
     const autoConfirm = data.paymentMethod === "CASH";
 
+    // -------- Availability decides PENDING vs ON_REQUEST ------------------
+    // Per the booking-engine design: if enough units are free, this is a
+    // normal booking that HOLDS inventory (PENDING/CONFIRMED). If units are
+    // short, we do NOT reject — we accept it as an ON_REQUEST ("Sur Demande")
+    // booking that the hotel/agency will confirm or decline. ON_REQUEST
+    // bookings do NOT hold inventory and skip the row-lock assert (there's
+    // nothing to reserve yet).
+    const preCheck = await checkAvailability(data.rooms, checkIn, checkOut);
+    const isOnRequest = !preCheck.available;
+
     // -------- Atomic: reserve inventory, generate ref, insert booking ----
     // The transaction ensures NO race condition between two simultaneous
     // bookings for the last room. assertAvailableInTransaction takes a
@@ -171,8 +208,12 @@ router.post("/", optionalAuth, async (req, res, next) => {
     let booking;
     try {
       booking = await prisma.$transaction(async (tx) => {
-        // Lock-and-check room inventory.
-        await assertAvailableInTransaction(tx, data.rooms, checkIn, checkOut);
+        // Lock-and-check room inventory — ONLY for bookings that hold
+        // inventory. ON_REQUEST bookings don't reserve units, so they skip
+        // the assert (and can't fail with a 409).
+        if (!isOnRequest) {
+          await assertAvailableInTransaction(tx, data.rooms, checkIn, checkOut);
+        }
 
         // Generate a unique reference. Inside the transaction so concurrent
         // bookings can't collide on the reference unique constraint.
@@ -184,6 +225,12 @@ router.post("/", optionalAuth, async (req, res, next) => {
           if (!existing) break;
           attempts++;
         } while (attempts < 10);
+
+        // Status resolution:
+        //   on-request  -> ON_REQUEST (awaiting hotel confirmation)
+        //   cash         -> CONFIRMED (auto)
+        //   otherwise    -> PENDING (awaiting payment)
+        const status = isOnRequest ? "ON_REQUEST" : autoConfirm ? "CONFIRMED" : "PENDING";
 
         return tx.booking.create({
           data: {
@@ -201,9 +248,9 @@ router.post("/", optionalAuth, async (req, res, next) => {
             subtotal,
             total,
             paymentMethod: data.paymentMethod,
-            status: autoConfirm ? "CONFIRMED" : "PENDING",
+            status,
             paymentStatus: "PENDING",
-            confirmedAt: autoConfirm ? new Date() : null,
+            confirmedAt: status === "CONFIRMED" ? new Date() : null,
             source: "website",
             lang: data.lang,
             ipAddress: req.ip,
@@ -231,11 +278,14 @@ router.post("/", optionalAuth, async (req, res, next) => {
 
     const formattedBooking = formatBooking(booking, data.lang);
 
-    // Notify the customer asynchronously via the booking service. The service
-    // owns the fire-and-forget pattern — if Resend is slow, down, or
-    // misconfigured we DO NOT want to fail the booking. The booking is
-    // already persisted, the customer needs their reference.
-    bookingService.notifyBookingCreated(formattedBooking, data.lang);
+    // Notify the customer asynchronously via the booking service. ON_REQUEST
+    // bookings get a "request received, awaiting confirmation" email; normal
+    // bookings get the standard "booking received" email.
+    if (isOnRequest) {
+      bookingService.notifyBookingRequested(formattedBooking, data.lang);
+    } else {
+      bookingService.notifyBookingCreated(formattedBooking, data.lang);
+    }
 
     res.status(201).json({
       data: formattedBooking,
@@ -282,7 +332,7 @@ router.patch("/:reference/cancel", async (req, res, next) => {
       select: { id: true, status: true, lang: true },
     });
     if (!booking) return res.status(404).json({ error: "Booking not found" });
-    if (!["PENDING", "CONFIRMED"].includes(booking.status)) {
+    if (!["PENDING", "ON_REQUEST", "CONFIRMED"].includes(booking.status)) {
       return res.status(400).json({ error: `Cannot cancel a booking with status: ${booking.status}` });
     }
 

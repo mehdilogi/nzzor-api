@@ -348,6 +348,7 @@ model HotelAmenity {
 
 enum BookingStatus {
   PENDING
+  ON_REQUEST
   CONFIRMED
   REJECTED
   CANCELLED
@@ -435,6 +436,7 @@ model BookingRoom {
   roomId        String
   quantity      Int    @default(1)
   pricePerNight Int
+  board         BoardType?  // chosen meal plan; null = legacy/room-only
 
   booking       Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
   room          Room    @relation(fields: [roomId], references: [id])
