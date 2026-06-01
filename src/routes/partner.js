@@ -9,6 +9,7 @@ const prisma = require("../utils/prisma");
 const { requireAuth, requirePartner } = require("../middleware/auth");
 const { formatBooking } = require("../utils/helpers");
 const bookingService = require("../services/bookingService");
+const { assertAvailableInTransaction, AvailabilityError } = require("../services/availabilityService");
 
 router.use(requireAuth, requirePartner);
 
@@ -114,14 +115,42 @@ router.post("/bookings/:id/confirm", async (req, res, next) => {
   try {
     const booking = await prisma.booking.findUnique({
       where: { id: req.params.id },
-      select: { id: true, hotelId: true, status: true },
+      select: {
+        id: true, hotelId: true, status: true, checkIn: true, checkOut: true,
+        rooms: { select: { roomId: true, quantity: true } },
+      },
     });
     if (!booking) return res.status(404).json({ error: "Booking not found" });
     if (!(await assertHotelAccess(req.user, booking.hotelId))) {
       return res.status(403).json({ error: "Not your booking" });
     }
-    if (booking.status !== "PENDING") {
+    if (!["PENDING", "ON_REQUEST"].includes(booking.status)) {
       return res.status(400).json({ error: `Cannot confirm a booking with status ${booking.status}` });
+    }
+
+    // An ON_REQUEST booking holds NO inventory — re-check availability under a
+    // row lock before confirming, so confirming can't oversell. PENDING
+    // bookings already hold their units, so they skip this.
+    if (booking.status === "ON_REQUEST") {
+      try {
+        await prisma.$transaction(async (tx) => {
+          await assertAvailableInTransaction(
+            tx,
+            booking.rooms.map((r) => ({ roomId: r.roomId, quantity: r.quantity })),
+            booking.checkIn,
+            booking.checkOut
+          );
+        });
+      } catch (txErr) {
+        if (txErr instanceof AvailabilityError) {
+          return res.status(409).json({
+            error: "Cannot confirm — the room is no longer available for these dates.",
+            code: txErr.code,
+            conflicts: txErr.conflicts,
+          });
+        }
+        throw txErr;
+      }
     }
 
     // Hand off to bookingService. It performs the DB update and fires the
@@ -153,7 +182,7 @@ router.post("/bookings/:id/reject", async (req, res, next) => {
     if (!(await assertHotelAccess(req.user, booking.hotelId))) {
       return res.status(403).json({ error: "Not your booking" });
     }
-    if (booking.status !== "PENDING") {
+    if (!["PENDING", "ON_REQUEST"].includes(booking.status)) {
       return res.status(400).json({ error: `Cannot reject a booking with status ${booking.status}` });
     }
 

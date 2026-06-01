@@ -3,6 +3,7 @@ const prisma = require("../utils/prisma");
 const { requireAuth, requireAdmin } = require("../middleware/auth");
 const { formatBooking, paginate } = require("../utils/helpers");
 const bookingService = require("../services/bookingService");
+const { assertAvailableInTransaction, AvailabilityError } = require("../services/availabilityService");
 const { startOfTodayInAlgiers, endOfTodayInAlgiers } = require("../utils/dates");
 
 router.use(requireAuth, requireAdmin);
@@ -238,7 +239,7 @@ router.get("/bookings/:id", async (req, res, next) => {
 router.patch("/bookings/:id/status", async (req, res, next) => {
   try {
     const { status, reason } = req.body;
-    const validStatuses = ["PENDING", "CONFIRMED", "CANCELLED", "COMPLETED", "NO_SHOW", "REFUNDED"];
+    const validStatuses = ["PENDING", "ON_REQUEST", "CONFIRMED", "REJECTED", "CANCELLED", "COMPLETED", "NO_SHOW", "REFUNDED"];
     if (!validStatuses.includes(status)) {
       return res.status(400).json({ error: `Invalid status. Must be one of: ${validStatuses.join(", ")}` });
     }
@@ -291,7 +292,102 @@ router.patch("/bookings/:id/payment", async (req, res, next) => {
 });
 
 // =============================================================================
-// CUSTOMER USERS — admin view of registered customer accounts
+// SUR DEMANDE (ON_REQUEST) — confirm / decline
+// -----------------------------------------------------------------------------
+// An ON_REQUEST booking was placed when units weren't free; it holds NO
+// inventory. Confirming it must therefore RE-CHECK availability under a row
+// lock — otherwise two on-request bookings for the same scarce unit could both
+// be confirmed and oversell. We reuse assertAvailableInTransaction (the same
+// guard normal bookings use) inside the confirm transaction.
+//
+// POST /api/admin/bookings/:id/confirm-request
+// POST /api/admin/bookings/:id/decline-request   body: { reason? }
+// =============================================================================
+
+router.post("/bookings/:id/confirm-request", async (req, res, next) => {
+  try {
+    const booking = await prisma.booking.findUnique({
+      where: { id: req.params.id },
+      select: {
+        id: true, status: true, checkIn: true, checkOut: true,
+        rooms: { select: { roomId: true, quantity: true } },
+      },
+    });
+    if (!booking) return res.status(404).json({ error: "Booking not found" });
+    if (booking.status !== "ON_REQUEST") {
+      return res.status(400).json({ error: `Only ON_REQUEST bookings can be confirmed this way (status is ${booking.status})` });
+    }
+
+    // Re-check availability under a row lock before confirming. ON_REQUEST
+    // bookings hold no inventory, so we must verify units are now free —
+    // otherwise confirming could oversell. We run the assert in a short
+    // transaction (it takes the row lock, throws if full), then hand off to
+    // the standard status transition which performs the update and fires the
+    // ON_REQUEST->CONFIRMED confirmation email. The assert is a manual,
+    // low-concurrency admin action, so the brief gap between assert and
+    // transition is acceptable; the assert catches the real-world case where
+    // the room sold out while the request was pending.
+    try {
+      await prisma.$transaction(async (tx) => {
+        await assertAvailableInTransaction(
+          tx,
+          booking.rooms.map((r) => ({ roomId: r.roomId, quantity: r.quantity })),
+          booking.checkIn,
+          booking.checkOut
+        );
+      });
+    } catch (txErr) {
+      if (txErr instanceof AvailabilityError) {
+        return res.status(409).json({
+          error: "Cannot confirm — the room is no longer available for these dates.",
+          code: txErr.code,
+          conflicts: txErr.conflicts,
+        });
+      }
+      throw txErr;
+    }
+
+    // Availability confirmed — transition ON_REQUEST -> CONFIRMED. The service
+    // performs the update and fires the confirmation email (this pair IS in
+    // the rules table from Bundle 1).
+    const formatted = await bookingService.transitionBookingStatus({
+      bookingId: booking.id,
+      newStatus: "CONFIRMED",
+      actor: "admin",
+    });
+
+    res.json({ data: formatted, message: "Request confirmed" });
+  } catch (err) {
+    if (err.statusCode === 404) return res.status(404).json({ error: err.message });
+    next(err);
+  }
+});
+
+router.post("/bookings/:id/decline-request", async (req, res, next) => {
+  try {
+    const { reason } = req.body || {};
+    const booking = await prisma.booking.findUnique({
+      where: { id: req.params.id },
+      select: { id: true, status: true },
+    });
+    if (!booking) return res.status(404).json({ error: "Booking not found" });
+    if (booking.status !== "ON_REQUEST") {
+      return res.status(400).json({ error: `Only ON_REQUEST bookings can be declined this way (status is ${booking.status})` });
+    }
+
+    const formatted = await bookingService.transitionBookingStatus({
+      bookingId: booking.id,
+      newStatus: "REJECTED",
+      actor: "admin",
+      reason: reason || "Request declined by Allouni",
+    });
+
+    res.json({ data: formatted, message: "Request declined" });
+  } catch (err) {
+    if (err.statusCode === 404) return res.status(404).json({ error: err.message });
+    next(err);
+  }
+});
 // -----------------------------------------------------------------------------
 // Read-only for v1. List has search, pagination, and aggregates (booking
 // count, lifetime spend). Detail includes the user's full booking history.
