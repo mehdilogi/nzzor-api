@@ -411,6 +411,75 @@ router.put("/rooms/:roomId", async (req, res, next) => {
   }
 });
 
+// -----------------------------------------------------------------------------
+// BOARD / MEAL-PLAN RATES (Phase B)
+// -----------------------------------------------------------------------------
+// One price per board type per room. The admin sends the FULL set each save
+// (replace semantics): boards with a price are upserted; boards omitted or sent
+// null are removed. ROOM_ONLY stays the basePrice fallback but can also be
+// priced explicitly here.
+
+const BOARD_TYPES = ["ROOM_ONLY", "BREAKFAST", "HALF_BOARD", "FULL_BOARD", "ALL_INCLUSIVE"];
+
+const boardRatesSchema = z.object({
+  rates: z.array(
+    z.object({
+      board: z.enum(BOARD_TYPES),
+      // null/absent price => remove this board for the room
+      price: z.number().int().min(0).nullable(),
+      isActive: z.boolean().default(true),
+    })
+  ),
+});
+
+// GET /api/admin/rooms/:roomId/board-rates — list a room's board rates
+router.get("/rooms/:roomId/board-rates", async (req, res, next) => {
+  try {
+    const rates = await prisma.roomBoardRate.findMany({
+      where: { roomId: req.params.roomId },
+      orderBy: { board: "asc" },
+    });
+    res.json({ data: rates });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PUT /api/admin/rooms/:roomId/board-rates — replace a room's board rates
+router.put("/rooms/:roomId/board-rates", async (req, res, next) => {
+  try {
+    const { rates } = boardRatesSchema.parse(req.body);
+    const roomId = req.params.roomId;
+
+    const room = await prisma.room.findUnique({ where: { id: roomId } });
+    if (!room) return res.status(404).json({ error: "Room not found" });
+
+    // Apply each board: price present -> upsert; price null -> delete.
+    await prisma.$transaction(
+      rates.map((r) =>
+        r.price == null
+          ? prisma.roomBoardRate.deleteMany({ where: { roomId, board: r.board } })
+          : prisma.roomBoardRate.upsert({
+              where: { roomId_board: { roomId, board: r.board } },
+              update: { price: r.price, isActive: r.isActive },
+              create: { roomId, board: r.board, price: r.price, isActive: r.isActive },
+            })
+      )
+    );
+
+    const updated = await prisma.roomBoardRate.findMany({
+      where: { roomId },
+      orderBy: { board: "asc" },
+    });
+    res.json({ data: updated, message: "Board rates updated" });
+  } catch (err) {
+    if (err.name === "ZodError") {
+      return res.status(400).json({ error: "Validation failed", details: err.errors });
+    }
+    next(err);
+  }
+});
+
 // DELETE /api/admin/rooms/:roomId
 // DELETE /api/admin/rooms/:roomId — smart delete
 //

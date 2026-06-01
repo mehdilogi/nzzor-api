@@ -205,6 +205,7 @@ model Room {
 
   hotel      Hotel   @relation(fields: [hotelId], references: [id], onDelete: Cascade)
   rates      RoomRate[]
+  boardRates RoomBoardRate[]
   bookings   BookingRoom[]
   photos     RoomPhoto[]
 
@@ -232,6 +233,48 @@ model RoomRate {
 
   @@index([roomId, startDate, endDate])
   @@map("room_rates")
+}
+
+// -----------------------------------------------------------------------------
+// BOARD / MEAL-PLAN RATES  (Phase B — booking engine v2)
+// -----------------------------------------------------------------------------
+// Distinct from RoomRate above. RoomRate is SEASONAL/date-range pricing
+// (standard/weekend/holiday/promo). RoomBoardRate is the MEAL-PLAN axis:
+// the per-night price of a room WITH a given board arrangement.
+//
+// Pricing is ABSOLUTE (the full per-room-per-night price for that board), not
+// a delta over basePrice — simpler for admin entry and for the quote engine to
+// sum across rooms. A room's `basePrice` remains the ROOM_ONLY fallback for
+// any room that has no board rates yet, so nothing existing breaks.
+//
+// One row per (room, board); unset boards simply don't exist as rows and are
+// treated as "not offered".
+// -----------------------------------------------------------------------------
+
+enum BoardType {
+  ROOM_ONLY      // Chambre seule — no meals
+  BREAKFAST      // Petit Déjeuner (BB)
+  HALF_BOARD     // Demi-pension (DP+) — breakfast + one meal
+  FULL_BOARD     // Pension complète (PC+) — all meals
+  ALL_INCLUSIVE  // Soft All Inclusive
+}
+
+model RoomBoardRate {
+  id        String    @id @default(uuid())
+  roomId    String
+
+  board     BoardType
+  price     Int       // DZD per room per night, ABSOLUTE for this board
+  isActive  Boolean   @default(true)
+
+  room      Room      @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@unique([roomId, board])
+  @@index([roomId])
+  @@map("room_board_rates")
 }
 
 // =============================================================================
