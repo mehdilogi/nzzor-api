@@ -12,6 +12,7 @@ const rateLimit = require("express-rate-limit");
 const hotelRoutes = require("./routes/hotels");
 const bookingRoutes = require("./routes/bookings");
 const availabilityRoutes = require("./routes/availability");
+const quoteRoutes = require("./routes/quote");
 const voucherRoutes = require("./routes/vouchers");
 const authRoutes = require("./routes/auth");
 const adminRoutes = require("./routes/admin");
@@ -64,6 +65,7 @@ app.use("/api/hotels", hotelRoutes);
 app.use("/api/bookings", bookingRoutes);
 app.use("/api/bookings", voucherRoutes); // voucher PDF download (GET /:reference/voucher.pdf)
 app.use("/api/availability", availabilityRoutes);
+app.use("/api/quote", quoteRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/admin", adminHotelRoutes);
