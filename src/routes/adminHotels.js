@@ -764,43 +764,4 @@ router.post("/hotels/:id/managers/:userId/reset-password", async (req, res, next
   }
 });
 
-// -----------------------------------------------------------------------------
-// ONE-TIME BACKFILL — seed ROOM_ONLY board rates from each room's basePrice.
-// -----------------------------------------------------------------------------
-// Temporary endpoint: run once after the board-rates migration, then it's
-// removed in the next bundle. Runs on the server where DATABASE_URL exists, so
-// no local .env or Railway shell needed. Idempotent — uses upsert, safe to hit
-// more than once. Protected by the same admin auth as the rest of this router.
-//
-//   Hit once (signed in as admin) :  GET /api/admin/backfill-board-rates
-//
-router.get("/backfill-board-rates", async (req, res, next) => {
-  try {
-    const rooms = await prisma.room.findMany({
-      select: { id: true, basePrice: true, typeEn: true },
-    });
-    let created = 0;
-    let skipped = 0;
-    for (const room of rooms) {
-      const existing = await prisma.roomBoardRate.findUnique({
-        where: { roomId_board: { roomId: room.id, board: "ROOM_ONLY" } },
-      });
-      if (existing) { skipped++; continue; }
-      await prisma.roomBoardRate.create({
-        data: { roomId: room.id, board: "ROOM_ONLY", price: room.basePrice, isActive: true },
-      });
-      created++;
-    }
-    res.json({
-      message: "Backfill complete",
-      rooms: rooms.length,
-      created,
-      skipped,
-      note: "ROOM_ONLY rates seeded from basePrice. This endpoint will be removed next bundle.",
-    });
-  } catch (err) {
-    next(err);
-  }
-});
-
 module.exports = router;
