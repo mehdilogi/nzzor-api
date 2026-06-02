@@ -61,25 +61,23 @@ function nightsBetween(checkIn, checkOut) {
 async function buildQuote(hotel, occupancy, checkIn, checkOut) {
   const nights = nightsBetween(checkIn, checkOut);
 
-  // Total guests across the whole search. Bundling decides, per room type, how
-  // many rooms of THAT type are needed to seat everyone: ceil(guests/capacity).
-  // A capacity-2 Double needs 2 rooms for 4 guests; a capacity-4 Suite needs 1.
+  // Model A: each rate card represents ONE physical room. The guest assembles
+  // their stay by picking as many rooms as they searched for (rooms = occupancy
+  // length), mixing types freely. We no longer bundle ceil(guests/capacity) into
+  // one option — pricing is per single room, and the UI enforces the room count
+  // and the total-capacity-vs-guests check.
   const totalGuests = occupancy.reduce(
     (sum, r) => sum + (r.adults || 0) + (r.children || 0),
     0
   );
   const guests = Math.max(1, totalGuests);
+  const roomsRequested = Math.max(1, occupancy.length);
 
   const activeRooms = (hotel.rooms || []).filter((r) => r.isActive);
 
-  // Per room type, how many units are needed to fit all guests.
-  const roomsNeededFor = (room) => {
-    const cap = Math.max(1, room.capacity || 1);
-    return Math.max(1, Math.ceil(guests / cap));
-  };
-
-  // Availability for each candidate room at ITS OWN needed quantity.
-  const availInput = activeRooms.map((r) => ({ roomId: r.id, quantity: roomsNeededFor(r) }));
+  // Availability per room at quantity 1 (one card = one room). The UI may let
+  // the guest pick several rooms of the same type, but each card is a unit.
+  const availInput = activeRooms.map((r) => ({ roomId: r.id, quantity: 1 }));
   let availByRoom = {};
   if (availInput.length > 0) {
     const avail = await checkAvailability(availInput, checkIn, checkOut);
@@ -88,9 +86,8 @@ async function buildQuote(hotel, occupancy, checkIn, checkOut) {
 
   const options = [];
   for (const room of activeRooms) {
-    const needed = roomsNeededFor(room);
     const a = availByRoom[room.id] || { unitsLeft: 0, totalUnits: room.totalUnits };
-    const availability = a.unitsLeft >= needed ? "AVAILABLE" : "ON_REQUEST";
+    const availability = a.unitsLeft >= 1 ? "AVAILABLE" : "ON_REQUEST";
 
     // Board options for this room. Price = room.basePrice + board.supplement.
     // The base is ALWAYS included, so a breakfast supplement of 2500 on a 5000
@@ -100,26 +97,39 @@ async function buildQuote(hotel, occupancy, checkIn, checkOut) {
     const activeBoards = (room.boardRates || []).filter((br) => br.isActive);
     const hasRoomOnly = activeBoards.some((br) => br.board === "ROOM_ONLY");
 
-    const boardList = activeBoards.map((br) => ({
-      board: br.board,
-      supplement: Math.max(0, br.supplement || 0),
-    }));
-    // Ensure ROOM_ONLY is always present (at base, supplement 0).
-    if (!hasRoomOnly) {
-      boardList.unshift({ board: "ROOM_ONLY", supplement: 0 });
+    // Build board options, applying the breakfast-included rule:
+    //  - breakfastIncluded ON  -> breakfast is FREE (supplement 0), overriding
+    //    any stored breakfast supplement; ensure a BREAKFAST option exists.
+    //  - breakfastIncluded OFF -> no BREAKFAST option at all.
+    const bfIncluded = room.breakfastIncluded !== false; // default true
+    const boardList = [];
+    for (const br of activeBoards) {
+      if (br.board === "BREAKFAST") {
+        if (!bfIncluded) continue;           // breakfast off -> skip
+        boardList.push({ board: "BREAKFAST", supplement: 0 }); // free, overrides
+      } else {
+        boardList.push({ board: br.board, supplement: Math.max(0, br.supplement || 0) });
+      }
+    }
+    // Ensure ROOM_ONLY always present (at base, supplement 0).
+    if (!hasRoomOnly) boardList.unshift({ board: "ROOM_ONLY", supplement: 0 });
+    // Ensure a free BREAKFAST option exists when included but no row stored it.
+    if (bfIncluded && !boardList.some((b) => b.board === "BREAKFAST")) {
+      boardList.push({ board: "BREAKFAST", supplement: 0 });
     }
 
     for (const br of boardList) {
       const pricePerNightPerRoom = base + br.supplement;
       // Skip if we genuinely have no price (base 0 AND no supplement).
       if (pricePerNightPerRoom <= 0) continue;
-      const total = pricePerNightPerRoom * nights * needed;
+      const total = pricePerNightPerRoom * nights; // one room
       options.push({
         roomId: room.id,
         roomType: { en: room.typeEn, fr: room.typeFr, ar: room.typeAr },
         board: br.board,
         boardLabel: BOARD_LABELS[br.board] || { en: br.board, fr: br.board, ar: br.board },
-        roomsCount: needed,
+        roomsCount: 1,
+        capacity: Math.max(1, room.capacity || 1),
         pricePerNightPerRoom,
         supplement: br.supplement,
         nights,
@@ -145,7 +155,7 @@ async function buildQuote(hotel, occupancy, checkIn, checkOut) {
   const flagTarget = firstAvailable || options[0];
   if (flagTarget) flagTarget.bestPrice = true;
 
-  return { nights, totalGuests: guests, options };
+  return { nights, totalGuests: guests, roomsRequested, options };
 }
 
 module.exports = { buildQuote, BOARD_LABELS, nightsBetween };

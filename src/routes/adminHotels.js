@@ -372,6 +372,7 @@ const roomSchema = z.object({
   bedType: z.string().min(1),
   basePrice: z.number().int().min(0),
   totalUnits: z.number().int().min(1).default(1),
+  breakfastIncluded: z.boolean().default(true),
   isActive: z.boolean().default(true),
 });
 

@@ -200,6 +200,8 @@ model Room {
 
   totalUnits Int    @default(1)
 
+  breakfastIncluded Boolean @default(true)  // free breakfast offered (supplement 0) unless turned off
+
   isActive   Boolean @default(true)
   sortOrder  Int     @default(0)
 
