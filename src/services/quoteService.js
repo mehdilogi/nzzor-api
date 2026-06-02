@@ -96,27 +96,17 @@ async function buildQuote(hotel, occupancy, checkIn, checkOut) {
     const base = room.basePrice > 0 ? room.basePrice : 0;
     const activeBoards = (room.boardRates || []).filter((br) => br.isActive);
     const hasRoomOnly = activeBoards.some((br) => br.board === "ROOM_ONLY");
-
-    // Build board options, applying the breakfast-included rule:
-    //  - breakfastIncluded ON  -> breakfast is FREE (supplement 0), overriding
-    //    any stored breakfast supplement; ensure a BREAKFAST option exists.
-    //  - breakfastIncluded OFF -> no BREAKFAST option at all.
+    // Breakfast is an INFO LINE on the card (free, in the room price) — NOT a
+    // separate selectable board. So a BREAKFAST board row is not turned into its
+    // own option here; the breakfastIncluded flag is passed to the UI to render
+    // a "Breakfast included" line on every rate card for this room.
     const bfIncluded = room.breakfastIncluded !== false; // default true
-    const boardList = [];
-    for (const br of activeBoards) {
-      if (br.board === "BREAKFAST") {
-        if (!bfIncluded) continue;           // breakfast off -> skip
-        boardList.push({ board: "BREAKFAST", supplement: 0 }); // free, overrides
-      } else {
-        boardList.push({ board: br.board, supplement: Math.max(0, br.supplement || 0) });
-      }
-    }
-    // Ensure ROOM_ONLY always present (at base, supplement 0).
+
+    const boardList = activeBoards
+      .filter((br) => br.board !== "BREAKFAST") // breakfast is a line, not a card
+      .map((br) => ({ board: br.board, supplement: Math.max(0, br.supplement || 0) }));
+    // Ensure ROOM_ONLY is always present (at base, supplement 0).
     if (!hasRoomOnly) boardList.unshift({ board: "ROOM_ONLY", supplement: 0 });
-    // Ensure a free BREAKFAST option exists when included but no row stored it.
-    if (bfIncluded && !boardList.some((b) => b.board === "BREAKFAST")) {
-      boardList.push({ board: "BREAKFAST", supplement: 0 });
-    }
 
     for (const br of boardList) {
       const pricePerNightPerRoom = base + br.supplement;
@@ -130,6 +120,7 @@ async function buildQuote(hotel, occupancy, checkIn, checkOut) {
         boardLabel: BOARD_LABELS[br.board] || { en: br.board, fr: br.board, ar: br.board },
         roomsCount: 1,
         capacity: Math.max(1, room.capacity || 1),
+        breakfastIncluded: bfIncluded,
         pricePerNightPerRoom,
         supplement: br.supplement,
         nights,
