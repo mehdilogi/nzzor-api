@@ -439,11 +439,24 @@ const boardRatesSchema = z.object({
 // GET /api/admin/rooms/:roomId/board-rates — list a room's board rates
 router.get("/rooms/:roomId/board-rates", async (req, res, next) => {
   try {
+    const roomId = req.params.roomId;
+    const room = await prisma.room.findUnique({ where: { id: roomId }, select: { basePrice: true } });
+    const base = room?.basePrice || 0;
     const rates = await prisma.roomBoardRate.findMany({
-      where: { roomId: req.params.roomId },
+      where: { roomId },
       orderBy: { board: "asc" },
     });
-    res.json({ data: rates });
+    // Return both shapes so either admin panel displays correctly:
+    //  - `supplement`: the add-on (new panel reads this directly)
+    //  - `price`: what the OLD panel shows in its box — for non-ROOM_ONLY we
+    //    expose the SUPPLEMENT here (so "what you see = what you type"), and
+    //    for ROOM_ONLY we expose the base. The true absolute is `priceAbsolute`.
+    const shaped = rates.map((r) => ({
+      ...r,
+      priceAbsolute: r.price,
+      price: r.board === "ROOM_ONLY" ? base : (r.supplement ?? Math.max(0, r.price - base)),
+    }));
+    res.json({ data: shaped });
   } catch (err) {
     next(err);
   }
@@ -457,22 +470,37 @@ router.put("/rooms/:roomId/board-rates", async (req, res, next) => {
 
     const room = await prisma.room.findUnique({ where: { id: roomId } });
     if (!room) return res.status(404).json({ error: "Room not found" });
-    const base = room.basePrice || 0;
 
-    // Normalize each row to a supplement, accepting either field:
-    //  - new admin sends `supplement` (already an add-on)
-    //  - old/cached admin sends `price` (absolute) -> supplement = price - base
-    //  - ROOM_ONLY is always supplement 0
+    // Determine the BASE price for this save. The old (cached) admin sends
+    // ROOM_ONLY as an absolute `price` (the room rate itself). The new admin
+    // sends supplement:0 for ROOM_ONLY and the base comes from the room. We
+    // prefer an explicit ROOM_ONLY price if present, else the room's basePrice.
+    const roomOnlyRow = rates.find((r) => r.board === "ROOM_ONLY");
+    const base =
+      roomOnlyRow && roomOnlyRow.price != null
+        ? roomOnlyRow.price
+        : (room.basePrice || 0);
+
+    // Normalize each NON-ROOM_ONLY row to a supplement (the add-on over base):
+    //  - new admin sends `supplement` directly
+    //  - old/cached admin sends `price` = the number typed in that box, which
+    //    the user means as the ADD-ON (e.g. "half board 5500" on a 5500 room
+    //    => +5500 => 11000). So price is treated as the supplement, NOT an
+    //    absolute. This matches how the admin actually enters values.
     //  - both null/absent => not offered (delete)
     const normalize = (r) => {
       if (r.board === "ROOM_ONLY") return 0;
       if (r.supplement != null) return Math.max(0, r.supplement);
-      if (r.price != null) return Math.max(0, r.price - base);
+      if (r.price != null) return Math.max(0, r.price);
       return null; // not offered
     };
 
-    await prisma.$transaction(
-      rates.map((r) => {
+    await prisma.$transaction([
+      // Keep the room's basePrice in sync with the ROOM_ONLY value entered.
+      ...(base !== (room.basePrice || 0)
+        ? [prisma.room.update({ where: { id: roomId }, data: { basePrice: base } })]
+        : []),
+      ...rates.map((r) => {
         const supp = normalize(r);
         return supp == null
           ? prisma.roomBoardRate.deleteMany({ where: { roomId, board: r.board } })
@@ -481,8 +509,8 @@ router.put("/rooms/:roomId/board-rates", async (req, res, next) => {
               update: { supplement: supp, price: base + supp, isActive: r.isActive },
               create: { roomId, board: r.board, supplement: supp, price: base + supp, isActive: r.isActive },
             });
-      })
-    );
+      }),
+    ]);
 
     const updated = await prisma.roomBoardRate.findMany({
       where: { roomId },
