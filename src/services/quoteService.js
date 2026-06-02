@@ -60,22 +60,26 @@ function nightsBetween(checkIn, checkOut) {
  */
 async function buildQuote(hotel, occupancy, checkIn, checkOut) {
   const nights = nightsBetween(checkIn, checkOut);
-  const roomsCount = occupancy.length;
 
-  // The biggest single room's head count — every candidate room type must hold
-  // at least this many guests (we assign the same type to all requested rooms).
-  const maxHeads = occupancy.reduce(
-    (m, r) => Math.max(m, (r.adults || 0) + (r.children || 0)),
+  // Total guests across the whole search. Bundling decides, per room type, how
+  // many rooms of THAT type are needed to seat everyone: ceil(guests/capacity).
+  // A capacity-2 Double needs 2 rooms for 4 guests; a capacity-4 Suite needs 1.
+  const totalGuests = occupancy.reduce(
+    (sum, r) => sum + (r.adults || 0) + (r.children || 0),
     0
   );
+  const guests = Math.max(1, totalGuests);
 
   const activeRooms = (hotel.rooms || []).filter((r) => r.isActive);
 
-  // Capacity gate: keep only room types that can hold the largest room request.
-  const fitRooms = activeRooms.filter((r) => r.capacity >= maxHeads);
+  // Per room type, how many units are needed to fit all guests.
+  const roomsNeededFor = (room) => {
+    const cap = Math.max(1, room.capacity || 1);
+    return Math.max(1, Math.ceil(guests / cap));
+  };
 
-  // Availability for all candidate rooms at the requested quantity, in one pass.
-  const availInput = fitRooms.map((r) => ({ roomId: r.id, quantity: roomsCount }));
+  // Availability for each candidate room at ITS OWN needed quantity.
+  const availInput = activeRooms.map((r) => ({ roomId: r.id, quantity: roomsNeededFor(r) }));
   let availByRoom = {};
   if (availInput.length > 0) {
     const avail = await checkAvailability(availInput, checkIn, checkOut);
@@ -83,9 +87,10 @@ async function buildQuote(hotel, occupancy, checkIn, checkOut) {
   }
 
   const options = [];
-  for (const room of fitRooms) {
+  for (const room of activeRooms) {
+    const needed = roomsNeededFor(room);
     const a = availByRoom[room.id] || { unitsLeft: 0, totalUnits: room.totalUnits };
-    const availability = a.unitsLeft >= roomsCount ? "AVAILABLE" : "ON_REQUEST";
+    const availability = a.unitsLeft >= needed ? "AVAILABLE" : "ON_REQUEST";
 
     // Board options for this room. Start from explicit active board rates
     // with a real positive price (a 0 or blank means "not offered" — it must
@@ -102,13 +107,13 @@ async function buildQuote(hotel, occupancy, checkIn, checkOut) {
 
     for (const br of boardList) {
       const pricePerNightPerRoom = br.price;
-      const total = pricePerNightPerRoom * nights * roomsCount;
+      const total = pricePerNightPerRoom * nights * needed;
       options.push({
         roomId: room.id,
         roomType: { en: room.typeEn, fr: room.typeFr, ar: room.typeAr },
         board: br.board,
         boardLabel: BOARD_LABELS[br.board] || { en: br.board, fr: br.board, ar: br.board },
-        roomsCount,
+        roomsCount: needed,
         pricePerNightPerRoom,
         nights,
         total,
@@ -133,7 +138,7 @@ async function buildQuote(hotel, occupancy, checkIn, checkOut) {
   const flagTarget = firstAvailable || options[0];
   if (flagTarget) flagTarget.bestPrice = true;
 
-  return { nights, roomsCount, options };
+  return { nights, totalGuests: guests, options };
 }
 
 module.exports = { buildQuote, BOARD_LABELS, nightsBetween };
