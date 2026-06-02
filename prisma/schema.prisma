@@ -264,7 +264,8 @@ model RoomBoardRate {
   roomId    String
 
   board     BoardType
-  price     Int       // DZD per room per night, ABSOLUTE for this board
+  price     Int       // legacy ABSOLUTE price; kept for back-compat, no longer the source of truth
+  supplement Int      @default(0)  // DZD per room per night ADDED to the room's basePrice (ROOM_ONLY = 0)
   isActive  Boolean   @default(true)
 
   room      Room      @relation(fields: [roomId], references: [id], onDelete: Cascade)

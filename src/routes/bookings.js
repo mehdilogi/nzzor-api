@@ -82,16 +82,16 @@ router.post("/", optionalAuth, async (req, res, next) => {
       if (!room) {
         return res.status(400).json({ error: `Room ${roomReq.roomId} not found` });
       }
-      // Price from the chosen board's rate when given; otherwise fall back to
-      // the room's basePrice (room-only / legacy). A board with a stored rate
-      // wins; ROOM_ONLY or no board => basePrice. We re-derive the price
-      // server-side rather than trusting the client — the board is the only
-      // thing the client chooses, never the price.
-      let pricePerNight = room.basePrice;
+      // Price = room.basePrice + the chosen board's supplement. The base is
+      // always included (a supplement is never the whole price). We re-derive
+      // server-side rather than trusting any client price. ROOM_ONLY / no board
+      // = basePrice (supplement 0).
+      const base = room.basePrice || 0;
       let board = roomReq.board || null;
+      let pricePerNight = base;
       if (board && board !== "ROOM_ONLY") {
         const rate = (room.boardRates || []).find(
-          (br) => br.board === board && br.isActive && br.price > 0
+          (br) => br.board === board && br.isActive
         );
         if (!rate) {
           return res.status(400).json({
@@ -99,13 +99,7 @@ router.post("/", optionalAuth, async (req, res, next) => {
             code: "BOARD_NOT_AVAILABLE",
           });
         }
-        pricePerNight = rate.price;
-      } else if (board === "ROOM_ONLY") {
-        // An explicit ROOM_ONLY rate may exist; prefer it, else basePrice.
-        const rate = (room.boardRates || []).find(
-          (br) => br.board === "ROOM_ONLY" && br.isActive && br.price > 0
-        );
-        if (rate) pricePerNight = rate.price;
+        pricePerNight = base + Math.max(0, rate.supplement || 0);
       }
       subtotal += pricePerNight * nights * roomReq.quantity;
       bookingRooms.push({

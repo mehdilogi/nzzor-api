@@ -425,8 +425,9 @@ const boardRatesSchema = z.object({
   rates: z.array(
     z.object({
       board: z.enum(BOARD_TYPES),
-      // null/absent price => remove this board for the room
-      price: z.number().int().min(0).nullable(),
+      // supplement = DZD added to the room's basePrice for this board.
+      // null/absent => remove this board (not offered). ROOM_ONLY => 0.
+      supplement: z.number().int().min(0).nullable(),
       isActive: z.boolean().default(true),
     })
   ),
@@ -453,16 +454,19 @@ router.put("/rooms/:roomId/board-rates", async (req, res, next) => {
 
     const room = await prisma.room.findUnique({ where: { id: roomId } });
     if (!room) return res.status(404).json({ error: "Room not found" });
+    const base = room.basePrice || 0;
 
-    // Apply each board: price present -> upsert; price null -> delete.
+    // Apply each board: supplement present -> upsert; null -> delete (not
+    // offered). We store the supplement (source of truth) AND keep the legacy
+    // `price` column in sync as base+supplement so older reads stay correct.
     await prisma.$transaction(
       rates.map((r) =>
-        r.price == null
+        r.supplement == null
           ? prisma.roomBoardRate.deleteMany({ where: { roomId, board: r.board } })
           : prisma.roomBoardRate.upsert({
               where: { roomId_board: { roomId, board: r.board } },
-              update: { price: r.price, isActive: r.isActive },
-              create: { roomId, board: r.board, price: r.price, isActive: r.isActive },
+              update: { supplement: r.supplement, price: base + r.supplement, isActive: r.isActive },
+              create: { roomId, board: r.board, supplement: r.supplement, price: base + r.supplement, isActive: r.isActive },
             })
       )
     );

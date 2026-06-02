@@ -92,21 +92,27 @@ async function buildQuote(hotel, occupancy, checkIn, checkOut) {
     const a = availByRoom[room.id] || { unitsLeft: 0, totalUnits: room.totalUnits };
     const availability = a.unitsLeft >= needed ? "AVAILABLE" : "ON_REQUEST";
 
-    // Board options for this room. Start from explicit active board rates
-    // with a real positive price (a 0 or blank means "not offered" — it must
-    // never become a bookable "free" option). Ensure ROOM_ONLY exists as a
-    // fallback from basePrice if not otherwise priced.
-    const boards = (room.boardRates || []).filter(
-      (br) => br.isActive && br.price > 0
-    );
-    const hasRoomOnly = boards.some((br) => br.board === "ROOM_ONLY");
-    const boardList = [...boards];
-    if (!hasRoomOnly && room.basePrice > 0) {
-      boardList.push({ board: "ROOM_ONLY", price: room.basePrice });
+    // Board options for this room. Price = room.basePrice + board.supplement.
+    // The base is ALWAYS included, so a breakfast supplement of 2500 on a 5000
+    // room correctly shows 7500 — a supplement can never leak as a full price.
+    // An active board row means "offered"; ROOM_ONLY is always offered at base.
+    const base = room.basePrice > 0 ? room.basePrice : 0;
+    const activeBoards = (room.boardRates || []).filter((br) => br.isActive);
+    const hasRoomOnly = activeBoards.some((br) => br.board === "ROOM_ONLY");
+
+    const boardList = activeBoards.map((br) => ({
+      board: br.board,
+      supplement: Math.max(0, br.supplement || 0),
+    }));
+    // Ensure ROOM_ONLY is always present (at base, supplement 0).
+    if (!hasRoomOnly) {
+      boardList.unshift({ board: "ROOM_ONLY", supplement: 0 });
     }
 
     for (const br of boardList) {
-      const pricePerNightPerRoom = br.price;
+      const pricePerNightPerRoom = base + br.supplement;
+      // Skip if we genuinely have no price (base 0 AND no supplement).
+      if (pricePerNightPerRoom <= 0) continue;
       const total = pricePerNightPerRoom * nights * needed;
       options.push({
         roomId: room.id,
@@ -115,6 +121,7 @@ async function buildQuote(hotel, occupancy, checkIn, checkOut) {
         boardLabel: BOARD_LABELS[br.board] || { en: br.board, fr: br.board, ar: br.board },
         roomsCount: needed,
         pricePerNightPerRoom,
+        supplement: br.supplement,
         nights,
         total,
         availability,
