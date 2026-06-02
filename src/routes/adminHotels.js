@@ -421,13 +421,16 @@ router.put("/rooms/:roomId", async (req, res, next) => {
 
 const BOARD_TYPES = ["ROOM_ONLY", "BREAKFAST", "HALF_BOARD", "FULL_BOARD", "ALL_INCLUSIVE"];
 
+// Accepts EITHER `supplement` (new admin) OR `price` (old/cached admin). Both
+// optional; at least the field the running admin sends will be present. The
+// handler normalizes to a supplement using the room's base price. This makes
+// the endpoint work no matter which admin bundle the browser has cached.
 const boardRatesSchema = z.object({
   rates: z.array(
     z.object({
       board: z.enum(BOARD_TYPES),
-      // supplement = DZD added to the room's basePrice for this board.
-      // null/absent => remove this board (not offered). ROOM_ONLY => 0.
-      supplement: z.number().int().min(0).nullable(),
+      supplement: z.number().int().min(0).nullable().optional(),
+      price: z.number().int().min(0).nullable().optional(),
       isActive: z.boolean().default(true),
     })
   ),
@@ -456,19 +459,29 @@ router.put("/rooms/:roomId/board-rates", async (req, res, next) => {
     if (!room) return res.status(404).json({ error: "Room not found" });
     const base = room.basePrice || 0;
 
-    // Apply each board: supplement present -> upsert; null -> delete (not
-    // offered). We store the supplement (source of truth) AND keep the legacy
-    // `price` column in sync as base+supplement so older reads stay correct.
+    // Normalize each row to a supplement, accepting either field:
+    //  - new admin sends `supplement` (already an add-on)
+    //  - old/cached admin sends `price` (absolute) -> supplement = price - base
+    //  - ROOM_ONLY is always supplement 0
+    //  - both null/absent => not offered (delete)
+    const normalize = (r) => {
+      if (r.board === "ROOM_ONLY") return 0;
+      if (r.supplement != null) return Math.max(0, r.supplement);
+      if (r.price != null) return Math.max(0, r.price - base);
+      return null; // not offered
+    };
+
     await prisma.$transaction(
-      rates.map((r) =>
-        r.supplement == null
+      rates.map((r) => {
+        const supp = normalize(r);
+        return supp == null
           ? prisma.roomBoardRate.deleteMany({ where: { roomId, board: r.board } })
           : prisma.roomBoardRate.upsert({
               where: { roomId_board: { roomId, board: r.board } },
-              update: { supplement: r.supplement, price: base + r.supplement, isActive: r.isActive },
-              create: { roomId, board: r.board, supplement: r.supplement, price: base + r.supplement, isActive: r.isActive },
-            })
-      )
+              update: { supplement: supp, price: base + supp, isActive: r.isActive },
+              create: { roomId, board: r.board, supplement: supp, price: base + supp, isActive: r.isActive },
+            });
+      })
     );
 
     const updated = await prisma.roomBoardRate.findMany({
