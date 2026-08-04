@@ -42,28 +42,39 @@ const PORT = process.env.PORT || 3001;
 //      looked like the same machine).
 //   3. bookings.js persisted the Cloudflare IP into Booking.ipAddress.
 //
-// We enable trust proxy so Express parses X-Forwarded-For, and additionally
-// prefer Cloudflare's CF-Connecting-IP, which Cloudflare OVERWRITES on every
-// request (a client cannot forge it through the CF edge).
-app.set("trust proxy", true);
+// Trust a FIXED NUMBER OF HOPS, not `true`.
+//
+// `trust proxy: true` takes the leftmost X-Forwarded-For entry, which any
+// caller can prepend themselves — one forged header per request would mint a
+// fresh rate-limit bucket. Trusting a fixed count makes Express strip that
+// many addresses from the right (the ones our own infrastructure added) and
+// land on the real client, ignoring anything the caller injected in front.
+//
+// Observed production chain (verified 2026-08-04 from an Algerian carrier):
+//   X-Forwarded-For: "41.200.26.91, 79.127.178.81"
+//                     ^client        ^Railway edge
+// Express builds [socket, 79.127.178.81, 41.200.26.91]; trusting 2 hops
+// yields 41.200.26.91. A spoofed leading entry is simply discarded.
+//
+// Overridable without a code change if Railway alters its topology:
+//   Railway -> Variables -> TRUST_PROXY_HOPS
+const TRUST_PROXY_HOPS = Number(process.env.TRUST_PROXY_HOPS || 2);
+app.set("trust proxy", TRUST_PROXY_HOPS);
 
-// NOTE ON SPOOFING: Cloudflare's published edge IP ranges are not verified
-// here. A caller who reaches Railway directly (663ftvea.up.railway.app,
-// bypassing Cloudflare) could forge CF-Connecting-IP and dodge rate limiting.
-// Impact is limited to rate-limit evasion and skewed analytics — no auth or
-// data path trusts this value. To close it later: enable Cloudflare
-// Authenticated Origin Pulls, or set a secret header at Cloudflare and reject
-// origin requests that lack it.
+// Cloudflare is NOT currently in front of api.nzzor.com (grey cloud —
+// /api/health reports viaCloudflare:false, cfRay:null). This resolver still
+// prefers CF-Connecting-IP so that re-enabling the orange cloud needs no code
+// change: Cloudflare overwrites that header on every request, so it cannot be
+// forged through the CF edge, and it stays correct whatever the hop count
+// becomes.
 function resolveClientIp(req) {
   const cf = req.headers["cf-connecting-ip"];
   if (typeof cf === "string" && cf.trim()) return cf.trim();
 
-  const xff = req.headers["x-forwarded-for"];
-  if (typeof xff === "string" && xff.trim()) {
-    // Leftmost entry is the originating client.
-    const first = xff.split(",")[0].trim();
-    if (first) return first;
-  }
+  // Express's own value, computed with TRUST_PROXY_HOPS. Read BEFORE we
+  // shadow req.ip below, so this is still the original getter.
+  if (typeof req.ip === "string" && req.ip) return req.ip;
+
   return req.socket?.remoteAddress || "unknown";
 }
 
@@ -204,6 +215,7 @@ app.get("/api/health", (req, res) => {
       country: req.headers["cf-ipcountry"] || null,
       cfRay: req.headers["cf-ray"] || null,
       forwardedFor: req.headers["x-forwarded-for"] || null,
+      trustProxyHops: TRUST_PROXY_HOPS,
     },
     corsOrigins,
   });
@@ -263,7 +275,7 @@ app.listen(PORT, () => {
      by Allouni Travel Agency
      Running on http://localhost:${PORT}
      API docs: http://localhost:${PORT}/api
-     trust proxy: NZZOR_TRUST_PROXY_ACTIVE (Cloudflare -> Railway)
+     trust proxy: NZZOR_TRUST_HOPS_PINNED (${TRUST_PROXY_HOPS} hop(s))
      CORS origins: ${corsOrigins.join(" | ")}
   ===========================================
   `);
