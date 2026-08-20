@@ -29,7 +29,12 @@ const createBookingSchema = z.object({
     phone: z.string().min(5).max(20),
   }),
   specialRequests: z.string().max(1000).optional(),
-  paymentMethod: z.enum(["CIB", "EDDAHABIA", "VISA", "MASTERCARD", "CASH", "BANK_TRANSFER", "WHATSAPP_ASSISTED"]),
+  // Must stay in lockstep with the PaymentMethod enum in schema.prisma. A
+  // value accepted here but absent there passes validation and then throws
+  // PrismaClientValidationError inside the transaction, surfacing as an
+  // opaque 500 instead of a clean 400. VISA and MASTERCARD were exactly
+  // that bug and have been removed from the checkout too.
+  paymentMethod: z.enum(["CIB", "EDDAHABIA", "CASH", "BANK_TRANSFER", "WHATSAPP_ASSISTED"]),
   lang: z.enum(["ar", "fr", "en"]).optional().default("fr"),
   // Optional "create an account while you book" flow. If both flags arrive,
   // we create a new user from the guest details before persisting the
@@ -172,7 +177,17 @@ router.post("/", optionalAuth, async (req, res, next) => {
       }
     }
 
-    // Cash/Bank transfer/WhatsApp = pending until payment; Card = auto-confirm on success (TODO)
+    // Cash = confirmed immediately. Card = PENDING_PAYMENT until SATIM says
+    // otherwise. Everything else = PENDING until the money arrives.
+    //
+    // PENDING_PAYMENT is deliberately a separate status from PENDING:
+    // jobs/expirePendingBookings sweeps PENDING on a 30-minute timer, and a
+    // customer sitting on SATIM's hosted page entering an OTP must not have
+    // their room released underneath them. Card bookings are reconciled and
+    // expired by jobs/reconcilePayments instead, only after SATIM confirms
+    // the order was not paid.
+    const CARD_METHODS = ["CIB", "EDDAHABIA"];
+    const isCard = CARD_METHODS.includes(data.paymentMethod);
     const autoConfirm = data.paymentMethod === "CASH";
 
     // -------- Availability decides PENDING vs ON_REQUEST ------------------
@@ -224,7 +239,17 @@ router.post("/", optionalAuth, async (req, res, next) => {
         //   on-request  -> ON_REQUEST (awaiting hotel confirmation)
         //   cash         -> CONFIRMED (auto)
         //   otherwise    -> PENDING (awaiting payment)
-        const status = isOnRequest ? "ON_REQUEST" : autoConfirm ? "CONFIRMED" : "PENDING";
+        //   on-request  -> ON_REQUEST (hotel confirms before any payment)
+        //   cash        -> CONFIRMED
+        //   card        -> PENDING_PAYMENT (SATIM decides)
+        //   otherwise   -> PENDING
+        const status = isOnRequest
+          ? "ON_REQUEST"
+          : autoConfirm
+          ? "CONFIRMED"
+          : isCard
+          ? "PENDING_PAYMENT"
+          : "PENDING";
 
         return tx.booking.create({
           data: {
@@ -275,9 +300,13 @@ router.post("/", optionalAuth, async (req, res, next) => {
     // Notify the customer asynchronously via the booking service. ON_REQUEST
     // bookings get a "request received, awaiting confirmation" email; normal
     // bookings get the standard "booking received" email.
+    // Card bookings stay silent here. Emailing "booking received" before the
+    // customer has been to the payment page means a declined card produces a
+    // confirmation-shaped email for a reservation that does not exist. The
+    // confirmation is sent from services/paymentService once SATIM confirms.
     if (isOnRequest) {
       bookingService.notifyBookingRequested(formattedBooking, data.lang);
-    } else {
+    } else if (!isCard) {
       bookingService.notifyBookingCreated(formattedBooking, data.lang);
     }
 

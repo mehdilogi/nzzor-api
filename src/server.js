@@ -19,6 +19,7 @@ const adminRoutes = require("./routes/admin");
 const adminHotelRoutes = require("./routes/adminHotels");
 const partnerRoutes = require("./routes/partner");
 const accountRoutes = require("./routes/account");
+const paymentRoutes = require("./routes/payments");
 const analyticsRoutes = require("./routes/analytics");
 const adminAnalyticsRoutes = require("./routes/adminAnalytics");
 const { errorHandler } = require("./middleware/errorHandler");
@@ -185,6 +186,7 @@ app.use("/api/auth/", authLimiter);
 app.use("/api/hotels", hotelRoutes);
 app.use("/api/bookings", bookingRoutes);
 app.use("/api/bookings", voucherRoutes); // voucher PDF download (GET /:reference/voucher.pdf)
+app.use("/api/payments", paymentRoutes);
 app.use("/api/availability", availabilityRoutes);
 app.use("/api/quote", quoteRoutes);
 app.use("/api/auth", authRoutes);
@@ -239,6 +241,12 @@ app.get("/api", (req, res) => {
         get: "GET /api/bookings/:reference",
         cancel: "PATCH /api/bookings/:reference/cancel",
         voucher: "GET /api/bookings/:reference/voucher.pdf",
+      },
+      payments: {
+        initiate: "POST /api/payments/satim/initiate",
+        return: "GET /api/payments/satim/return",
+        fail: "GET /api/payments/satim/fail",
+        status: "GET /api/payments/satim/status/:reference",
       },
       availability: {
         check: "POST /api/availability/check",
@@ -307,5 +315,21 @@ app.listen(PORT, () => {
       }
     });
     console.log("[cron] scheduled expirePendingBookings every 5 minutes");
+
+    // Reconcile SATIM payments the browser never confirmed. SATIM auto-cancels
+    // an order that is never acknowledged, so a customer who pays and then
+    // closes the tab would be debited while we never confirm. This sweep asks
+    // SATIM directly about every attempt still awaiting an answer. Manually
+    // triggerable via:
+    //   node -e "require('./src/jobs/reconcilePayments').reconcilePayments()"
+    const { reconcilePayments } = require("./jobs/reconcilePayments");
+    cron.schedule("*/5 * * * *", async () => {
+      try {
+        await reconcilePayments();
+      } catch (err) {
+        console.error("[reconcile] cron run failed:", err.message);
+      }
+    });
+    console.log("[cron] scheduled reconcilePayments every 5 minutes");
   }
 });

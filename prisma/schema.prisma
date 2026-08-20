@@ -351,6 +351,8 @@ model HotelAmenity {
 
 enum BookingStatus {
   PENDING
+  PENDING_PAYMENT   // card booking awaiting the SATIM hosted-page result
+  PAYMENT_FAILED    // SATIM declined or reversed the card payment
   ON_REQUEST
   CONFIRMED
   REJECTED
@@ -450,22 +452,34 @@ model BookingRoom {
 model Payment {
   id              String        @id @default(uuid())
   bookingId       String
-  amount          Int
+  amount          Int           // whole DZD. SATIM is sent amount * 100.
   method          PaymentMethod
   status          PaymentStatus @default(PENDING)
 
-  gatewayRef      String?
+  // What we send SATIM as `orderNumber`. Capped at 10 chars by their spec
+  // (AN..10), which is why it cannot be the booking reference (13 chars).
+  // Unique PER ATTEMPT: SATIM error 1 is "order number already processed",
+  // so a retry after a decline must use a fresh value.
+  orderNumber     String?       @unique
+
+  // SATIM's own order id (the `orderId` from register.do, `mdOrder` on
+  // confirm). Unique so a duplicate callback can never settle twice.
+  gatewayRef      String?       @unique
+  formUrl         String?       @db.Text
   gatewayResponse String?       @db.Text
 
   isRefund        Boolean       @default(false)
   refundReason    String?
 
+  confirmedAt     DateTime?
+
   booking         Booking       @relation(fields: [bookingId], references: [id], onDelete: Cascade)
 
   createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
 
   @@index([bookingId])
-  @@index([gatewayRef])
+  @@index([status, createdAt])
   @@map("payments")
 }
 
