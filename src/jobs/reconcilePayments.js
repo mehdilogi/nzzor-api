@@ -43,8 +43,91 @@ const ABANDON_AFTER_MINUTES = Number(process.env.SATIM_ABANDON_AFTER_MINUTES || 
 // Safety valve so one bad run cannot hammer SATIM.
 const MAX_PER_RUN = Number(process.env.SATIM_RECONCILE_MAX_PER_RUN || 50);
 
+// How long to hold a card booking whose order registration never succeeded.
+// Shorter than ABANDON_AFTER_MINUTES because there is nothing to wait for:
+// SATIM never issued an order id, so no payment can arrive against it. Matches
+// the 30-minute hold window used for ordinary PENDING bookings.
+const ORPHAN_AFTER_MINUTES = Number(process.env.SATIM_ORPHAN_AFTER_MINUTES || 30);
+
+// ---------------------------------------------------------------------------
+// Pass 2 — card bookings whose registration never got off the ground
+// ---------------------------------------------------------------------------
+// THE GAP THIS CLOSES
+//
+// When register.do fails — SATIM unreachable, credentials refused, merchant
+// account disabled — routes/payments.js marks the Payment row FAILED but the
+// BOOKING stays PENDING_PAYMENT, holding its room.
+//
+// Neither existing sweep can reach it:
+//   expirePendingBookings  targets status = PENDING, so it skips PENDING_PAYMENT
+//   reconcilePayments      requires a gatewayRef, and there isn't one
+//
+// So the room was held forever. In production that means one bad minute at the
+// gateway silently removes inventory until somebody notices by hand.
+//
+// A booking is only expired here when it has NO live registered attempt — that
+// is, no PENDING payment carrying a gatewayRef. If a real attempt is in flight,
+// pass 1 owns it and this pass leaves it alone. Runs whether or not SATIM is
+// configured, because an unconfigured gateway is precisely when these pile up.
+async function expireOrphanedCardBookings() {
+  const cutoff = new Date(Date.now() - ORPHAN_AFTER_MINUTES * 60 * 1000);
+
+  const orphans = await prisma.booking.findMany({
+    where: {
+      status: "PENDING_PAYMENT",
+      paymentStatus: { not: "PAID" },
+      createdAt: { lt: cutoff },
+      payments: {
+        none: {
+          status: "PENDING",
+          isRefund: false,
+          gatewayRef: { not: null },
+        },
+      },
+    },
+    select: { id: true, reference: true },
+    orderBy: { createdAt: "asc" },
+    take: MAX_PER_RUN,
+  });
+
+  if (orphans.length === 0) return { expired: 0 };
+
+  let expired = 0;
+  for (const b of orphans) {
+    try {
+      // Direct update rather than transitionBookingStatus: the customer never
+      // reached a payment page, so there is nothing to notify them about and
+      // an "expired" email would be the first they hear of a booking they
+      // believe failed.
+      await prisma.booking.update({
+        where: { id: b.id },
+        data: { status: "EXPIRED", paymentStatus: "FAILED" },
+      });
+      expired++;
+    } catch (err) {
+      console.error(`[reconcile] could not expire orphan ${b.reference}:`, err.message);
+    }
+  }
+
+  console.log(
+    `[reconcile] released ${expired} card booking(s) whose registration never succeeded`
+  );
+  return { expired };
+}
+
 async function reconcilePayments() {
-  if (!satim.isConfigured()) return { checked: 0, skipped: "not_configured" };
+  // Pass 2 first, and unconditionally: these bookings hold inventory and need
+  // no gateway call to resolve.
+  let orphanResult = { expired: 0 };
+  try {
+    orphanResult = await expireOrphanedCardBookings();
+  } catch (err) {
+    console.error("[reconcile] orphan sweep failed:", err.message);
+  }
+
+  if (!satim.isConfigured()) {
+    return { checked: 0, skipped: "not_configured", orphansExpired: orphanResult.expired };
+  }
 
   const now = Date.now();
   const minAgeCutoff = new Date(now - MIN_AGE_MINUTES * 60 * 1000);
@@ -63,7 +146,7 @@ async function reconcilePayments() {
     take: MAX_PER_RUN,
   });
 
-  if (candidates.length === 0) return { checked: 0 };
+  if (candidates.length === 0) return { checked: 0, orphansExpired: orphanResult.expired };
 
   let paid = 0;
   let failed = 0;
@@ -101,7 +184,11 @@ async function reconcilePayments() {
     `pending ${stillPending}, abandoned ${abandoned}` + (errored ? `, errors ${errored}` : "")
   );
 
-  return { checked: candidates.length, paid, failed, stillPending, abandoned, errored };
+  return {
+    checked: candidates.length,
+    paid, failed, stillPending, abandoned, errored,
+    orphansExpired: orphanResult.expired,
+  };
 }
 
 // Give up on an attempt SATIM still reports as registered-but-unpaid. The
@@ -129,4 +216,10 @@ async function abandon(paymentId) {
   );
 }
 
-module.exports = { reconcilePayments, MIN_AGE_MINUTES, ABANDON_AFTER_MINUTES };
+module.exports = {
+  reconcilePayments,
+  expireOrphanedCardBookings,
+  MIN_AGE_MINUTES,
+  ABANDON_AFTER_MINUTES,
+  ORPHAN_AFTER_MINUTES,
+};
