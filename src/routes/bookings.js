@@ -6,6 +6,7 @@ const prisma = require("../utils/prisma");
 const { generateBookingRef, formatBooking } = require("../utils/helpers");
 const { optionalAuth } = require("../middleware/auth");
 const bookingService = require("../services/bookingService");
+const recaptcha = require("../services/recaptchaService");
 const {
   assertAvailableInTransaction,
   checkAvailability,
@@ -46,12 +47,28 @@ const createBookingSchema = z.object({
   createAccount: z.boolean().optional().default(false),
   password: z.string().min(8).max(100).optional(),
   promoCode: z.string().optional(),
+  // reCAPTCHA token from the checkout page. Optional in the schema so the
+  // field's absence never produces a validation error — enforcement is
+  // decided by recaptchaService, which is a no-op until RECAPTCHA_SECRET is
+  // configured. See src/services/recaptchaService.js.
+  captchaToken: z.string().max(4000).optional(),
 });
 
 // POST /api/bookings
 router.post("/", optionalAuth, async (req, res, next) => {
   try {
     const data = createBookingSchema.parse(req.body);
+
+    // Anti-bot gate, required by SATIM's cahier de recette on the page
+    // carrying the payment button. Checked first so a bot never reaches
+    // availability locking or account creation.
+    const captcha = await recaptcha.verifyToken(data.captchaToken, req.clientIp || req.ip);
+    if (!captcha.ok) {
+      return res.status(400).json({
+        error: "Captcha verification failed. Please tick the box and try again.",
+        code: "CAPTCHA_FAILED",
+      });
+    }
 
     // Validate date logic using ALGERIA local time as the reference. The
     // previous implementation used the server's UTC `new Date()`, which on

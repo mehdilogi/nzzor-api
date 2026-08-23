@@ -471,6 +471,21 @@ model Payment {
   isRefund        Boolean       @default(false)
   refundReason    String?
 
+  // ---- Receipt fields ----------------------------------------------------
+  // SATIM's cahier de recette requires the return page to display, for an
+  // accepted payment: respCode_desc, orderId, orderNumber, approvalCode, the
+  // transaction date and time, the amount with currency, and the payment
+  // method. All of it is already inside gatewayResponse, but a receipt must
+  // not depend on re-parsing a blob every render — these are the fields the
+  // customer sees and that support will be asked to look up.
+  approvalCode    String?       // SATIM authorization number
+  respCode        String?       // "00" on success
+  respCodeDesc    String?       @db.Text // localised description from SATIM
+  pan             String?       // already masked by SATIM, e.g. 6280****7215
+  cardBrand       String?       // CIB | EDAHABIA, as displayed on the receipt
+
+  // Transaction timestamp as reported by us at confirmation time. Used as the
+  // receipt's "date et heure de la transaction".
   confirmedAt     DateTime?
 
   booking         Booking       @relation(fields: [bookingId], references: [id], onDelete: Cascade)

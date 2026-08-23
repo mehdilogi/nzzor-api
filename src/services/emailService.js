@@ -40,6 +40,10 @@ const BookingEmail = require("./emails/BookingEmail");
 // the email body has all the info; the PDF is convenience.
 const { generateVoucherPdf } = require("./voucherService");
 
+// Payment receipt PDF. Separate from the voucher: the voucher is a travel
+// document, the receipt is a financial one. See services/receiptService.js.
+const { generateReceiptPdf } = require("./receiptService");
+
 // ---- One-time client init --------------------------------------------------
 const apiKey = process.env.RESEND_API_KEY;
 const fromAddress = process.env.EMAIL_FROM || "Nzzor <bookings@nzzor.com>";
@@ -415,7 +419,98 @@ function renderResetHtml({ copy, url, firstName, isRtl }) {
 </html>`;
 }
 
+// ---------------------------------------------------------------------------
+// sendPaymentReceipt — email the receipt to an arbitrary address
+// ---------------------------------------------------------------------------
+// Required by SATIM's cahier de recette: "L'envoi du reçu de paiement par mail
+// a une adresse tierce en format PDF."
+//
+// Note the recipient is NOT booking.guest.email — the whole point is that it
+// can go to a third party (an employer, an accountant). The calling route is
+// responsible for rate limiting and for confirming the payment is actually
+// PAID before offering this.
+//
+// Unlike the booking emails this one is NOT fire-and-forget: the customer is
+// watching a spinner and expects to be told whether it worked, so it returns a
+// boolean rather than swallowing failures.
+//
+// @param {Object}  opts
+// @param {string}  opts.to       destination address
+// @param {Object}  opts.receipt  payload from the receipt endpoint
+// @param {string}  opts.lang     "en" | "fr" | "ar"
+// @returns {Promise<boolean>}
+async function sendPaymentReceipt({ to, receipt, lang = "fr" }) {
+  if (!resend) {
+    console.log(`[emailService] (disabled) would send receipt for ${receipt.reference} to ${to}`);
+    return false;
+  }
+
+  const isRtl = lang === "ar";
+  const subject =
+    lang === "en"
+      ? `Payment receipt — Nzzor ${receipt.reference}`
+      : lang === "ar"
+      ? `إيصال الدفع — نزور ${receipt.reference}`
+      : `Reçu de paiement — Nzzor ${receipt.reference}`;
+
+  const L = {
+    en: { intro: "Your payment receipt is attached as a PDF.", ref: "Booking reference", amount: "Amount paid", help: "Payment problem? Call SATIM free on 3020." },
+    fr: { intro: "Votre reçu de paiement est joint au format PDF.", ref: "Référence de réservation", amount: "Montant payé", help: "Problème de paiement ? Appelez gratuitement la SATIM au 3020." },
+    ar: { intro: "إيصال الدفع الخاص بك مرفق بصيغة PDF.", ref: "رقم الحجز", amount: "المبلغ المدفوع", help: "مشكلة في الدفع؟ اتصل مجاناً بساتيم على 3020." },
+  }[lang] || null;
+  const copy = L || { intro: "Votre reçu de paiement est joint au format PDF.", ref: "Référence", amount: "Montant payé", help: "" };
+
+  try {
+    let attachments;
+    try {
+      const pdf = await generateReceiptPdf(receipt, lang);
+      attachments = [{ filename: `nzzor-receipt-${receipt.reference}.pdf`, content: pdf }];
+    } catch (pdfErr) {
+      // The PDF *is* the deliverable here, unlike the voucher on a booking
+      // email. Without it there is nothing worth sending, so fail honestly
+      // rather than delivering an empty-handed message.
+      console.error(`[emailService] receipt PDF failed for ${receipt.reference}:`, pdfErr.message);
+      return false;
+    }
+
+    const html = `<!doctype html><html dir="${isRtl ? "rtl" : "ltr"}"><body style="margin:0;padding:32px;background:#FAF8F4;font-family:Arial,Helvetica,sans-serif;color:#16161A">
+<div style="max-width:520px;margin:0 auto;background:#fff;border-radius:14px;padding:28px">
+<div style="font-size:18px;font-weight:bold;margin-bottom:4px">Nzzor</div>
+<div style="font-size:12px;color:#6B6B75;margin-bottom:20px">Allouni Travel Agency</div>
+<p style="font-size:14px;line-height:1.6;margin:0 0 18px">${copy.intro}</p>
+<div style="border:1px dashed #E5E2DC;border-radius:10px;padding:12px 16px;margin-bottom:18px">
+<div style="font-size:11px;color:#6B6B75;text-transform:uppercase;letter-spacing:.06em">${copy.ref}</div>
+<div style="font-size:17px;font-weight:bold;letter-spacing:.04em">${receipt.reference}</div>
+</div>
+<div style="font-size:14px;margin-bottom:18px"><strong>${copy.amount}:</strong> ${receipt.amount} ${receipt.currency || "DZD"}</div>
+<div style="font-size:12px;color:#6B6B75;border-top:1px solid #E5E2DC;padding-top:14px">${copy.help}</div>
+</div></body></html>`;
+
+    const result = await resend.emails.send({
+      from: fromAddress,
+      to: [to],
+      subject,
+      html,
+      text: `${copy.intro}\n${copy.ref}: ${receipt.reference}\n${copy.amount}: ${receipt.amount} ${receipt.currency || "DZD"}\n${copy.help}`,
+      tags: [{ name: "category", value: "payment_receipt" }, { name: "lang", value: lang }],
+      replyTo: "bookings@nzzor.com",
+      attachments,
+    });
+
+    if (result.error) {
+      console.error(`[emailService] Resend error for receipt/${receipt.reference}:`, result.error);
+      return false;
+    }
+    console.log(`[emailService] sent receipt for ${receipt.reference} → ${to} (id: ${result.data?.id})`);
+    return true;
+  } catch (err) {
+    console.error(`[emailService] failed to send receipt for ${receipt.reference}:`, err);
+    return false;
+  }
+}
+
 module.exports = {
+  sendPaymentReceipt,
   sendBookingCreated,
   sendBookingConfirmed,
   sendBookingPaid,

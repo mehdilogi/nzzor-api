@@ -289,6 +289,9 @@ async function confirmOrder({ orderId, lang }) {
       pick(json, "actionCodeDescription", "ActionCodeDescription") || null,
     udf1: json && json.params ? json.params.udf1 || null : null,
     respCode: json && json.params ? json.params.respCode || null : null,
+    // SATIM's checklist names this field explicitly: the return page must show
+    // respCode_desc, and fall back to actionCodeDescription when it is empty.
+    respCodeDesc: json && json.params ? json.params.respCode_desc || null : null,
     raw,
   };
 }

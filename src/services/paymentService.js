@@ -75,9 +75,21 @@ async function finalizePayment(paymentId, lang) {
 
   // --- paid ---------------------------------------------------------------
   if (result.paid) {
+    // Persist every field the receipt has to show. See the receipt block on
+    // the Payment model: these are required by SATIM's cahier de recette and
+    // must survive independently of the raw gateway blob.
     await prisma.payment.update({
       where: { id: payment.id },
-      data: { status: "PAID", confirmedAt: new Date(), gatewayResponse: result.raw },
+      data: {
+        status: "PAID",
+        confirmedAt: new Date(),
+        gatewayResponse: result.raw,
+        approvalCode: result.approvalCode || null,
+        respCode: result.respCode || null,
+        respCodeDesc: result.respCodeDesc || result.actionCodeDescription || null,
+        pan: result.pan || null,
+        cardBrand: payment.method === "EDDAHABIA" ? "EDAHABIA" : "CIB",
+      },
     });
     await prisma.booking.update({
       where: { id: booking.id },
@@ -124,10 +136,29 @@ async function finalizePayment(paymentId, lang) {
   }
 
   // --- declined / reversed / refunded ------------------------------------
-  const message = satim.describeFailure(result, "The payment was declined.");
+  // SATIM's rule for the rejection message, from the cahier de recette:
+  //   respCode "00" + ErrorCode "0" + OrderStatus "3"
+  //     -> the fixed trilingual "your transaction was rejected" message
+  //   otherwise
+  //     -> respCode_desc, falling back to actionCodeDescription when empty
+  // The fixed case is signalled to the frontend with a code so it can render
+  // the sentence in the customer's own language rather than SATIM's.
+  const isFixedRejection =
+    String(result.respCode) === "00" &&
+    String(result.errorCode) === "0" &&
+    Number(result.orderStatus) === 3;
+  const message = isFixedRejection
+    ? null
+    : result.respCodeDesc || satim.describeFailure(result, null);
   await prisma.payment.update({
     where: { id: payment.id },
-    data: { status: "FAILED", gatewayResponse: result.raw },
+    data: {
+      status: "FAILED",
+      gatewayResponse: result.raw,
+      respCode: result.respCode || null,
+      respCodeDesc: result.respCodeDesc || result.actionCodeDescription || null,
+      approvalCode: result.approvalCode || null,
+    },
   });
   await prisma.booking.update({
     where: { id: booking.id },
@@ -138,7 +169,12 @@ async function finalizePayment(paymentId, lang) {
     `[satim] ${booking.reference} FAILED (order ${payment.gatewayRef}, ` +
     `OrderStatus ${result.orderStatus}, actionCode ${result.actionCode})`
   );
-  return { outcome: "failed", reference: booking.reference, message };
+  return {
+    outcome: "failed",
+    reference: booking.reference,
+    message,
+    rejectionCode: isFixedRejection ? "TRANSACTION_REJECTED" : null,
+  };
 }
 
 module.exports = { finalizePayment };
