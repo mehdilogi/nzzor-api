@@ -68,6 +68,42 @@ function formatHotel(hotel, lang = "en") {
   };
 }
 
+// The listing grid needs eight fields per hotel. formatHotel() returns the
+// whole record — full description, every photo URL, every amenity with its
+// icon, and every room type with price and capacity — which at limit=24 is
+// several hundred kilobytes of JSON to draw a grid of cards. On a market that
+// is overwhelmingly mobile data, that is the single most expensive thing the
+// listing does.
+//
+// Pair this with LIST_INCLUDE in routes/hotels.js: photos are capped there at
+// five (primary first) and rooms are reduced to basePrice, which is all
+// priceFrom needs.
+function formatHotelCard(hotel, lang = "en") {
+  const primary = hotel.photos?.find((p) => p.isPrimary) || hotel.photos?.[0];
+  const prices = (hotel.rooms || [])
+    .map((r) => r.basePrice)
+    .filter((n) => typeof n === "number");
+
+  return {
+    id: hotel.id,
+    slug: hotel.slug,
+    name: localize(hotel, "name", lang),
+    city: localize(hotel, "city", lang),
+    stars: hotel.stars,
+    rating: hotel.rating,
+    reviewCount: hotel.reviewCount,
+    isFeatured: hotel.isFeatured,
+    tags: hotel.tags || [],
+    trustSignals: {
+      instantConfirmation: hotel.instantConfirmation,
+      verifiedPartner: hotel.verifiedPartner,
+    },
+    priceFrom: prices.length ? Math.min(...prices) : null,
+    photos: (hotel.photos || []).map((p) => ({ id: p.id, url: p.url, isPrimary: p.isPrimary })),
+    primaryPhoto: primary?.url || null,
+  };
+}
+
 function formatRoom(room, lang = "en") {
   return {
     id: room.id,
@@ -128,9 +164,14 @@ function formatBooking(booking, lang = "en") {
   };
 }
 
-function paginate(query) {
+// maxLimit is a per-route ceiling. It defaults to 50 so every existing caller
+// behaves exactly as before; the hotels listing raises it because restoring an
+// accumulated list after a back-navigation asks for several pages in one
+// request, and silently truncating that at 50 loses rows the guest had
+// already scrolled past.
+function paginate(query, maxLimit = 50) {
   const page = Math.max(1, parseInt(query.page) || 1);
-  const limit = Math.min(50, Math.max(1, parseInt(query.limit) || 20));
+  const limit = Math.min(maxLimit, Math.max(1, parseInt(query.limit) || 20));
   return { skip: (page - 1) * limit, take: limit, page, limit };
 }
 
@@ -138,6 +179,7 @@ module.exports = {
   generateBookingRef,
   localize,
   formatHotel,
+  formatHotelCard,
   formatRoom,
   formatBooking,
   paginate,
