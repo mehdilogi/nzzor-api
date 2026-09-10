@@ -1,6 +1,6 @@
 const router = require("express").Router();
 const prisma = require("../utils/prisma");
-const { formatHotel, paginate } = require("../utils/helpers");
+const { formatHotel, formatHotelCard, paginate } = require("../utils/helpers");
 
 const HOTEL_INCLUDE = {
   rooms: { where: { isActive: true }, orderBy: { sortOrder: "asc" }, include: { photos: true } },
@@ -8,11 +8,33 @@ const HOTEL_INCLUDE = {
   amenities: { include: { amenity: true } },
 };
 
+// What the listing grid actually needs. The full include above pulls every
+// room with its own photos and every amenity joined to its dictionary row —
+// for 24 hotels that is thousands of rows fetched to render a card that shows
+// a name, a city, a rating and a price.
+//
+// Photos are capped at five with the primary first: that is what the card's
+// carousel shows, and twenty URLs per hotel is most of the response body.
+// Rooms are reduced to basePrice, which is all priceFrom is computed from.
+const LIST_INCLUDE = {
+  rooms: { where: { isActive: true }, select: { basePrice: true } },
+  photos: {
+    orderBy: [{ isPrimary: "desc" }, { sortOrder: "asc" }],
+    take: 5,
+    select: { id: true, url: true, isPrimary: true },
+  },
+};
+
+// The listing accumulates pages client-side, and a back-navigation restores
+// them in a single request, so this route needs a higher ceiling than the
+// 50 that suits every other caller.
+const LIST_MAX_LIMIT = 200;
+
 // GET /api/hotels — Search & list
 router.get("/", async (req, res, next) => {
   try {
     const lang = req.query.lang || "en";
-    const { skip, take, page, limit } = paginate(req.query);
+    const { skip, take, page, limit } = paginate(req.query, LIST_MAX_LIMIT);
 
     const where = { isActive: true };
 
@@ -61,12 +83,12 @@ router.get("/", async (req, res, next) => {
     }
 
     const [hotels, total] = await Promise.all([
-      prisma.hotel.findMany({ where, include: HOTEL_INCLUDE, orderBy, skip, take }),
+      prisma.hotel.findMany({ where, include: LIST_INCLUDE, orderBy, skip, take }),
       prisma.hotel.count({ where }),
     ]);
 
     res.json({
-      data: hotels.map(h => formatHotel(h, lang)),
+      data: hotels.map(h => formatHotelCard(h, lang)),
       pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
     });
   } catch (err) { next(err); }
