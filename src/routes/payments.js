@@ -42,9 +42,13 @@ const WEB_BASE_URL = (process.env.WEB_BASE_URL || "https://nzzor.com").replace(/
 
 // Payment methods that go through the SATIM hosted page. Both CIB and
 // Edahabia produce an identical register.do call — the spec has no card-type
-// parameter, the gateway decides acceptance when the card is entered. Keeping
-// them as separate values preserves what the customer told us they intended,
-// which is worth having in analytics and in support conversations.
+// parameter, the gateway decides acceptance when the card is entered.
+//
+// SATIM's certification review (13/09/2026) required the two to be presented as
+// a single combined option on the payment page, so the customer no longer
+// declares a card type and new bookings all carry "CIB". Both values stay
+// accepted here: bookings taken before the merge still hold "EDDAHABIA" and
+// must remain payable.
 const CARD_METHODS = ["CIB", "EDDAHABIA"];
 
 const initiateSchema = z.object({
@@ -71,7 +75,15 @@ router.post("/satim/initiate", async (req, res, next) => {
         lang: true,
       },
     });
-    if (!booking) return null;
+    // Was `return null`, which ended the handler without sending anything —
+    // the request hung until the client or a proxy timed it out. An unknown
+    // reference is a 404, not a silence.
+    if (!booking) {
+      return res.status(404).json({
+        error: `No booking found for reference ${data.reference.toUpperCase()}`,
+        code: "BOOKING_NOT_FOUND",
+      });
+    }
 
     if (booking.paymentStatus === "PAID") {
       return res.status(409).json({
@@ -280,7 +292,10 @@ async function buildReceipt(reference) {
         hotel: { select: { name: true, cityEn: true, cityFr: true, cityAr: true } },
       },
     });
-    if (!booking) return res.status(404).json({ error: "Booking not found" });
+    // buildReceipt is a plain function, not a handler — there is no `res` here.
+    // Calling res.status() threw a ReferenceError that surfaced as a 500 to the
+    // customer instead of a 404. Every caller already turns null into a 404.
+    if (!booking) return null;
 
     // Newest settled attempt. A booking can carry several Payment rows when a
     // customer retried after a decline; the receipt describes the one that
@@ -313,7 +328,13 @@ async function buildReceipt(reference) {
         transactionAt: payment.confirmedAt || payment.createdAt,
         amount: payment.amount,
         currency: "DZD",
-        method: payment.cardBrand || (payment.method === "EDDAHABIA" ? "EDAHABIA" : "CIB"),
+        // cardBrand comes back from SATIM on confirmation and is authoritative.
+        // The old fallback printed the customer's declared card type, but since
+        // the CIB/Edahabia merge nothing is declared — every new booking stores
+        // "CIB", so that fallback would assert a brand we do not know. The
+        // combined label is never wrong and still satisfies the checklist's
+        // "payment method (CIB / Edahabia)" field.
+        method: payment.cardBrand || "CIB / EDAHABIA",
 
         // --- context for the printed receipt -----------------------------
         pan: payment.pan || null,
