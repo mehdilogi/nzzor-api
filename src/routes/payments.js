@@ -295,7 +295,17 @@ async function buildReceipt(reference) {
         checkOut: true,
         nights: true,
         lang: true,
-        hotel: { select: { name: true, cityEn: true, cityFr: true, cityAr: true } },
+        // Hotel has NO `name` column — it is nameEn / nameFr / nameAr, the same
+        // shape as the city columns beside it. Selecting `name` made Prisma
+        // throw on every single call, so this endpoint returned 500 for every
+        // booking and the return page silently rendered without any of the
+        // eight fields SATIM grades.
+        hotel: {
+          select: {
+            nameEn: true, nameFr: true, nameAr: true,
+            cityEn: true, cityFr: true, cityAr: true,
+          },
+        },
       },
     });
     // buildReceipt is a plain function, not a handler — there is no `res` here.
@@ -320,6 +330,20 @@ async function buildReceipt(reference) {
     if (!payment) return null;
 
     const paid = payment.status === "PAID";
+
+    const lang = booking.lang || "fr";
+    const h = booking.hotel || {};
+    // What the customer reads on the web result page, in their own language.
+    const hotelName =
+      (lang === "ar" && h.nameAr) ||
+      (lang === "en" && h.nameEn) ||
+      h.nameFr || h.nameEn || h.nameAr || null;
+    // Latin-script only, for the PDF. receiptService uses PDFKit's built-in
+    // Helvetica on purpose — a receipt must never fail to generate because a
+    // font asset is missing from a deploy — and Helvetica has no Arabic
+    // glyphs. Handing it nameAr would produce an unreadable line on exactly
+    // the document a worried customer reaches for.
+    const hotelNameLatin = h.nameFr || h.nameEn || null;
 
     return {
         paid,
@@ -346,11 +370,12 @@ async function buildReceipt(reference) {
         pan: payment.pan || null,
         guestName: `${booking.guestFirstName} ${booking.guestLastName}`.trim(),
         guestEmail: booking.guestEmail,
-        hotelName: booking.hotel?.name || null,
+        hotelName,
+        hotelNameLatin,
         checkIn: booking.checkIn,
         checkOut: booking.checkOut,
         nights: booking.nights,
-      lang: booking.lang || "fr",
+      lang,
     };
 }
 
