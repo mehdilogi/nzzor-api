@@ -99,7 +99,13 @@ router.post("/satim/initiate", async (req, res, next) => {
     }
     // PENDING is accepted alongside PENDING_PAYMENT so that bookings created
     // before this feature shipped can still be paid.
-    if (!["PENDING_PAYMENT", "PENDING"].includes(booking.status)) {
+    //
+    // PAYMENT_FAILED must be accepted too. finalizePayment sets that status on
+    // any decline, so without it a customer whose card is refused once can
+    // never retry — the second attempt 409s and the booking is stranded. A new
+    // Payment row with a fresh orderNumber is created below, so retrying is
+    // safe; SATIM error code 1 (order already processed) cannot occur.
+    if (!["PENDING_PAYMENT", "PENDING", "PAYMENT_FAILED"].includes(booking.status)) {
       return res.status(409).json({
         error: `Cannot start a payment for a booking with status ${booking.status}`,
         code: "BOOKING_NOT_PAYABLE",
