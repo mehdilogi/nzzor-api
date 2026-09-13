@@ -225,10 +225,18 @@ router.get("/meta/cities", async (req, res, next) => {
       where: { isActive: true },
       _count: { id: true },
     });
+    // All three names, not just the requested one. The listing is server
+    // rendered but the language lives in client state, so the server cannot
+    // know which to send — the client picks. `name` stays the lang-specific
+    // value for existing callers, and is what the filter matches on, so it
+    // must keep being requested as English by the listing page.
     res.json({
       data: cities.map(c => ({
         key: c.city,
         name: c[`city${lang.charAt(0).toUpperCase() + lang.slice(1)}`] || c.cityEn,
+        nameEn: c.cityEn,
+        nameFr: c.cityFr || c.cityEn,
+        nameAr: c.cityAr || c.cityEn,
         hotelCount: c._count.id,
       })),
     });
