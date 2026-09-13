@@ -358,13 +358,21 @@ async function buildReceipt(reference) {
         transactionAt: payment.confirmedAt || payment.createdAt,
         amount: payment.amount,
         currency: "DZD",
-        // cardBrand comes back from SATIM on confirmation and is authoritative.
-        // The old fallback printed the customer's declared card type, but since
-        // the CIB/Edahabia merge nothing is declared — every new booking stores
-        // "CIB", so that fallback would assert a brand we do not know. The
-        // combined label is never wrong and still satisfies the checklist's
-        // "payment method (CIB / Edahabia)" field.
-        method: payment.cardBrand || "CIB / EDAHABIA",
+        // Fixed label, deliberately ignoring payment.cardBrand.
+        //
+        // Nothing writes a trustworthy value into that column. Before the
+        // CIB/Edahabia merge it held whichever radio the customer clicked —
+        // a declaration, never SATIM's report — and paymentService no longer
+        // writes it at all. Reading it would therefore print "CIB" on rows
+        // paid before the merge and the combined label on rows paid after,
+        // so the same field would disagree with itself between two
+        // references SATIM can open side by side.
+        //
+        // Reinstate `payment.cardBrand || ...` here as soon as there is a
+        // real source for the brand — either a field in the
+        // acknowledgeTransaction response, or the PAN's BIN if SATIM confirms
+        // it identifies the issuer. Both are asked in the thread with Brahim.
+        method: "CIB / EDAHABIA",
 
         // --- context for the printed receipt -----------------------------
         pan: payment.pan || null,
