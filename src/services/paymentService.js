@@ -88,7 +88,24 @@ async function finalizePayment(paymentId, lang) {
         respCode: result.respCode || null,
         respCodeDesc: result.respCodeDesc || result.actionCodeDescription || null,
         pan: result.pan || null,
-        cardBrand: payment.method === "EDDAHABIA" ? "EDAHABIA" : "CIB",
+        // cardBrand is deliberately NOT written here any more.
+        //
+        // It used to be derived from payment.method — the card type the
+        // customer picked on our own page — and then printed on the receipt as
+        // though SATIM had reported it. That was already only an assumption.
+        // Since SATIM's certification review required CIB and Edahabia to be
+        // merged into a single option (13/09/2026), nothing is declared at all:
+        // every booking now carries "CIB", so this line would stamp "CIB" on
+        // receipts for customers who paid with an Edahabia card.
+        //
+        // Leaving it null lets buildReceipt fall back to the combined
+        // "CIB / EDAHABIA" label, which is never wrong. Rows written before
+        // this change keep whatever they already hold.
+        //
+        // If acknowledgeTransaction turns out to return a card-type field,
+        // read it in satimService.confirmOrder and set it here instead. The
+        // full response is kept in gatewayResponse, so the first real
+        // certification transaction will show whether such a field exists.
       },
     });
     await prisma.booking.update({
