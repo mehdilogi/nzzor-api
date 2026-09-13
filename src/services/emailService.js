@@ -198,6 +198,14 @@ function formatDate(dateInput, lang) {
   const locale = lang === "ar" ? "ar-DZ" : lang === "fr" ? "fr-FR" : "en-GB";
   return d.toLocaleDateString(locale, {
     weekday: "short", day: "numeric", month: "short", year: "numeric",
+    // Check-in and check-out are calendar dates stored at midnight UTC, so UTC
+    // is the anchor that reproduces them — matching voucherService.formatDate.
+    // Without this the runtime's own zone is used, which is right only because
+    // Railway happens to run UTC: on any negative-offset zone, midnight UTC
+    // formats as the previous day and every stay in every email shifts back
+    // twenty-four hours. Not the one-hour offset SATIM reported on the receipt
+    // — that was a timestamp, this is a date — but the same class of fault.
+    timeZone: "UTC",
   });
 }
 
