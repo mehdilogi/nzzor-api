@@ -39,7 +39,7 @@ const COPY = {
     title: "Payment receipt",
     operator: "Operated by Allouni Travel Agency",
     reference: "Booking reference",
-    order_id: "Transaction ID (SATIM)",
+    order_id: "Transaction ID",
     order_number: "Order number",
     approval: "Authorization code",
     datetime: "Date and time",
@@ -59,7 +59,7 @@ const COPY = {
     title: "Reçu de paiement",
     operator: "Exploité par Allouni Travel Agency",
     reference: "Référence de réservation",
-    order_id: "Identifiant de transaction (SATIM)",
+    order_id: "Identifiant de transaction",
     order_number: "Numéro de commande",
     approval: "Numéro d'autorisation",
     datetime: "Date et heure",
@@ -159,7 +159,9 @@ function generateReceiptPdf(r, lang = "fr") {
         [c.approval, r.approvalCode],
         [c.datetime, fmtDate(r.transactionAt, lang)],
         [c.method, r.method],
-        [c.card, r.pan],
+        // No card number. SATIM's certification review (13/09/2026) asked for it
+        // to be removed; the PDF must match the return page. r.pan is still in
+        // the payload and on the Payment row, just never printed.
         [c.guest, r.guestName],
         // hotelNameLatin, not hotelName: this document renders in Helvetica,
         // which has no Arabic glyphs (see the FONTS note at the top). For an
