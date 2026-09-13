@@ -161,7 +161,11 @@ function generateReceiptPdf(r, lang = "fr") {
         [c.method, r.method],
         [c.card, r.pan],
         [c.guest, r.guestName],
-        [c.hotel, r.hotelName],
+        // hotelNameLatin, not hotelName: this document renders in Helvetica,
+        // which has no Arabic glyphs (see the FONTS note at the top). For an
+        // Arabic booking hotelName is the Arabic name and would come out
+        // unreadable here, while the web result page shows it correctly.
+        [c.hotel, r.hotelNameLatin || r.hotelName],
         [c.stay, r.nights ? `${r.nights} ${c.nights}` : null],
       ].filter(([, v]) => v !== null && v !== undefined && v !== "");
 

@@ -206,7 +206,16 @@ async function registerOrder({
     // booking is traceable in SATIM's registers and in the confirm response.
     jsonParams: JSON.stringify({
       force_terminal_id: TERMINAL_ID,
-      udf1: String(bookingRef || "").slice(0, 20),
+      // Alphanumeric only. SATIM's certification review (13/09/2026): "le champ
+      // UDF1 [...] doit être afficher sans les caractères spéciaux (sur nos
+      // system)." Our reference is NZR-XXXX-XXXX, so the hyphens are what their
+      // registers could not render — NZR-3FNL-FFV3 is sent as NZR3FNLFFV3.
+      //
+      // Nothing reads udf1 back to look a booking up: confirmOrder exposes it
+      // for traceability only, and every lookup goes through orderNumber or
+      // gatewayRef. Stripping the hyphens is therefore safe, and the value
+      // stays unique because the reference alphabet has no other separators.
+      udf1: String(bookingRef || "").replace(/[^A-Za-z0-9]/g, "").slice(0, 20),
     }),
   };
   if (description) params.description = String(description).slice(0, 512);
