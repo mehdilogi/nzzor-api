@@ -62,16 +62,36 @@ function buildWhere(query, omit = []) {
     if (tagList.length) where.tags = { hasEvery: tagList };
   }
 
+  // Price filters the hotel's DISPLAYED price — priceFrom, the cheapest active
+  // room — not "any room in range". Those are the same thing for a maximum and
+  // very different for a minimum:
+  //
+  //   max  "has a room at or below X"  ==  "cheapest room is at or below X"
+  //   min  "has a room at or above X"  !=  "cheapest room is at or above X"
+  //
+  // Under the old `some: { gte: min }` a hotel with a 4 500 room and a 9 000
+  // room passed a 7 000 minimum and then rendered "4 500 DZD / night" — a
+  // result visibly outside the range the guest had just set. The minimum is
+  // therefore expressed as `none` below it, which is what makes the cheapest
+  // room the thing being tested.
   if ((query.minPrice || query.maxPrice) && !skip("price")) {
-    where.rooms = {
-      some: {
-        isActive: true,
-        basePrice: {
-          ...(query.minPrice ? { gte: parseInt(query.minPrice) } : {}),
-          ...(query.maxPrice ? { lte: parseInt(query.maxPrice) } : {}),
-        },
-      },
-    };
+    const min = query.minPrice ? parseInt(query.minPrice) : null;
+    const max = query.maxPrice ? parseInt(query.maxPrice) : null;
+
+    const some = { isActive: true };
+    if (min !== null || max !== null) {
+      some.basePrice = {
+        ...(min !== null ? { gte: min } : {}),
+        ...(max !== null ? { lte: max } : {}),
+      };
+    }
+    where.rooms = { some };
+
+    // `none` alone would also be satisfied by a hotel with no rooms at all,
+    // which is why it is paired with the `some` above rather than replacing it.
+    if (min !== null) {
+      where.rooms.none = { isActive: true, basePrice: { lt: min } };
+    }
   }
 
   if (query.q) {
