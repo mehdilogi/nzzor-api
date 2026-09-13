@@ -82,16 +82,27 @@ function copyFor(lang) {
   return lang === "en" ? COPY.en : COPY.fr;
 }
 
+// Algeria is UTC+1 all year and has no daylight saving. Without an explicit
+// timeZone, toLocaleString formats in the runtime's own zone — the browser's
+// for the web page, and UTC for the Railway container that builds the PDF,
+// which is why SATIM saw a receipt running exactly one hour behind. Pinning
+// Africa/Algiers makes the stamp the merchant's local time everywhere, which
+// is what a transaction on an Algerian merchant site has to show whether the
+// customer opens it in Algiers, Paris or Montreal.
 function fmtDate(value, lang) {
   if (!value) return "-";
   const locale = lang === "en" ? "en-GB" : "fr-DZ";
   try {
     return new Date(value).toLocaleString(locale, {
+      timeZone: "Africa/Algiers",
       day: "2-digit", month: "2-digit", year: "numeric",
       hour: "2-digit", minute: "2-digit", second: "2-digit",
     });
   } catch {
-    return new Date(value).toISOString().replace("T", " ").slice(0, 19);
+    // Last-resort branch, only reached if Intl throws. toISOString is UTC, so
+    // shift by Algeria's fixed +1 before slicing.
+    const d = new Date(new Date(value).getTime() + 60 * 60 * 1000);
+    return d.toISOString().replace("T", " ").slice(0, 19);
   }
 }
 
