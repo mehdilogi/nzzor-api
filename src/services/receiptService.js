@@ -95,6 +95,12 @@ function fmtDate(value, lang) {
   try {
     return new Date(value).toLocaleString(locale, {
       timeZone: "Africa/Algiers",
+      // 24-hour, forced. Left to the locale, fr-DZ and ar-DZ render a 12-hour
+      // clock with AM/PM on some ICU builds and 24-hour on others, so the same
+      // code produced different formats on Railway and locally. A payment
+      // timestamp is not somewhere to accept that. Verified to give 00:10 at
+      // midnight rather than the 24:10 that hour12 can yield in some locales.
+      hour12: false,
       day: "2-digit", month: "2-digit", year: "numeric",
       hour: "2-digit", minute: "2-digit", second: "2-digit",
     });
@@ -104,6 +110,20 @@ function fmtDate(value, lang) {
     const d = new Date(new Date(value).getTime() + 60 * 60 * 1000);
     return d.toISOString().replace("T", " ").slice(0, 19);
   }
+}
+
+// PDFKit's built-in Helvetica uses WinAnsi encoding, which has no glyph for the
+// narrow no-break space (U+202F) that fr-DZ and fr-FR use to group thousands.
+// SATIM's receipt rendered 14 800 DZD as "14 /800 DZD" because of it. Every
+// string that reaches the page goes through here: exotic spaces become an
+// ordinary one, and anything else outside WinAnsi is dropped rather than left
+// to render as a stray glyph on a financial document.
+function pdfSafe(value) {
+  return String(value)
+    // U+00A0 no-break, U+202F narrow no-break, U+2007 figure, U+2009 thin,
+    // U+2060 word-joiner — all used as separators by one locale or another.
+    .replace(/[\u00A0\u202F\u2007\u2009\u2060]/g, " ")
+    .replace(/[\u200B-\u200F\u2028\u2029]/g, "");
 }
 
 function fmtAmount(amount, lang) {
@@ -158,7 +178,7 @@ function generateReceiptPdf(r, lang = "fr") {
       // ---- respCode_desc, when SATIM sent one -----------------------------
       if (r.respCodeDesc) {
         doc.font("Helvetica-Bold").fontSize(11).fillColor(INK)
-          .text(String(r.respCodeDesc), left, doc.y, { width });
+          .text(pdfSafe(r.respCodeDesc), left, doc.y, { width });
         doc.moveDown(0.9);
       }
 
@@ -187,7 +207,7 @@ function generateReceiptPdf(r, lang = "fr") {
         const y = doc.y;
         doc.font("Helvetica").fontSize(10).fillColor(GRAY).text(k, left, y, { width: labelW });
         doc.font("Helvetica-Bold").fontSize(10).fillColor(INK)
-          .text(String(v), left + labelW, y, { width: width - labelW });
+          .text(pdfSafe(v), left + labelW, y, { width: width - labelW });
         doc.moveDown(0.35);
         doc.moveTo(left, doc.y).lineTo(right, doc.y).strokeColor("#F2F0EC").lineWidth(0.5).stroke();
         doc.moveDown(0.45);
@@ -200,7 +220,7 @@ function generateReceiptPdf(r, lang = "fr") {
       doc.fillColor(GRAY).font("Helvetica").fontSize(10)
         .text(c.amount, left + 16, boxTop + 12);
       doc.fillColor(INK).font("Helvetica-Bold").fontSize(20)
-        .text(`${fmtAmount(r.amount, lang)} ${r.currency || "DZD"}`, left + 16, boxTop + 25);
+        .text(pdfSafe(`${fmtAmount(r.amount, lang)} ${r.currency || "DZD"}`), left + 16, boxTop + 25);
       doc.y = boxTop + 52;
 
       // ---- footer ---------------------------------------------------------
