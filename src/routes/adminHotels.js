@@ -67,7 +67,7 @@ const trimOnly = (s) => String(s || "").trim();
 const hotelSchema = z.object({
   nameEn: z.string().min(1), nameFr: z.string().min(1), nameAr: z.string().min(1),
   descEn: z.string().default(""), descFr: z.string().default(""), descAr: z.string().default(""),
-  stars: z.number().int().min(1).max(5),
+  stars: z.number().int().min(0).max(5),
   // city is the filter KEY — always lowercase, always trimmed.
   city: z.string().min(1).transform(toKey),
   // Display fields: trimmed; Latin scripts get title-cased so the dropdown
