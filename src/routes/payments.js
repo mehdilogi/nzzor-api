@@ -73,6 +73,7 @@ router.post("/satim/initiate", async (req, res, next) => {
         paymentStatus: true,
         paymentMethod: true,
         lang: true,
+        hotel: { select: { onlineBooking: true } },
       },
     });
     // Was `return null`, which ended the handler without sending anything —
@@ -82,6 +83,16 @@ router.post("/satim/initiate", async (req, res, next) => {
       return res.status(404).json({
         error: `No booking found for reference ${data.reference.toUpperCase()}`,
         code: "BOOKING_NOT_FOUND",
+      });
+    }
+
+    // A hotel switched to WhatsApp-only in the admin must not take card
+    // payments, whatever the browser sends. Hiding the button is not a control:
+    // an old tab or a shared checkout link would still reach this route.
+    if (booking.hotel && booking.hotel.onlineBooking === false) {
+      return res.status(409).json({
+        error: "Online booking is not available for this hotel. Please contact us on WhatsApp.",
+        code: "ONLINE_BOOKING_DISABLED",
       });
     }
 
