@@ -154,6 +154,10 @@ model Hotel {
   // Status
   isActive      Boolean @default(true)
   isFeatured    Boolean @default(false)
+  // false = still listed and searchable, but sold by WhatsApp only: no online
+  // booking, no SATIM payment. Distinct from isActive, which hides the hotel.
+  // Enforced server-side at payment initiation, not just by hiding buttons.
+  onlineBooking Boolean @default(true)
   sortOrder     Int     @default(0)
 
   // AI-search tags — see TAG_DICTIONARY in src/utils/tags.js for canonical keys
