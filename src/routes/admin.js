@@ -270,6 +270,203 @@ router.patch("/bookings/:id/status", async (req, res, next) => {
   }
 });
 
+// =============================================================================
+// ACCOUNTING — gross, commission, what each hotel is owed
+// -----------------------------------------------------------------------------
+// The booking total is the GROSS: what the customer pays. Nzzor keeps a
+// commission (Hotel.commissionRate, %) and owes the hotel the rest.
+//
+// Two directions of money:
+//   collectedBy NZZOR — paid online (CIB/Edahabia) or by bank transfer to the
+//                       agency. Nzzor holds the gross and OWES the hotel the net.
+//   collectedBy HOTEL — cash at the hotel or WhatsApp-assisted. The hotel holds
+//                       the gross and OWES Nzzor the commission.
+// hotelPayoutStatus marks either direction as settled (UNPAID -> PAID).
+//
+// Rate and commission are frozen on the booking when it is settled, so
+// changing a hotel's rate later never rewrites history. Unsettled bookings
+// follow the hotel's current rate.
+// =============================================================================
+
+const ONLINE_METHODS = ["CIB", "EDDAHABIA", "BANK_TRANSFER"];
+const HOTEL_METHODS = ["CASH", "WHATSAPP_ASSISTED"];
+
+function ledgerLine(b) {
+  const collectedBy = ONLINE_METHODS.includes(b.paymentMethod) ? "NZZOR" : "HOTEL";
+  const rate = b.commissionRate != null ? b.commissionRate : (b.hotel ? b.hotel.commissionRate : 0);
+  const gross = b.total || 0;
+  const commission = b.commissionAmount != null ? b.commissionAmount : Math.round((gross * (rate || 0)) / 100);
+  const net = gross - commission;
+  const settled = b.hotelPayoutStatus === "PAID";
+  return {
+    id: b.id,
+    reference: b.reference,
+    hotelId: b.hotelId,
+    hotelName: b.hotel ? b.hotel.nameFr || b.hotel.nameEn : "",
+    guest: `${b.guestFirstName || ""} ${b.guestLastName || ""}`.trim(),
+    checkIn: b.checkIn,
+    checkOut: b.checkOut,
+    nights: b.nights,
+    paymentMethod: b.paymentMethod,
+    paymentStatus: b.paymentStatus,
+    status: b.status,
+    paidAt: b.paidAt,
+    collectedBy,
+    gross,
+    rate,
+    commission,
+    net,
+    // What is still to move, and in which direction.
+    owedToHotel: collectedBy === "NZZOR" && !settled ? net : 0,
+    owedByHotel: collectedBy === "HOTEL" && !settled ? commission : 0,
+    settled,
+    hotelPaidAt: b.hotelPaidAt,
+    hotelPayoutRef: b.hotelPayoutRef,
+    rateFrozen: b.commissionRate != null,
+  };
+}
+
+function ledgerWhere(q) {
+  const where = {
+    isTest: false,
+    OR: [
+      // Money Nzzor collected and kept (not refunded).
+      { paymentMethod: { in: ONLINE_METHODS }, paymentStatus: "PAID" },
+      // Stays the hotel collected itself.
+      { paymentMethod: { in: HOTEL_METHODS }, status: { in: ["CONFIRMED", "COMPLETED"] } },
+    ],
+  };
+  // Period = stays that START in the range (accounting by check-in month).
+  if (q.start || q.end) {
+    where.checkIn = {};
+    if (q.start) where.checkIn.gte = new Date(`${q.start}T00:00:00.000Z`);
+    if (q.end) where.checkIn.lte = new Date(`${q.end}T23:59:59.999Z`);
+  }
+  if (q.hotelId) where.hotelId = q.hotelId;
+  if (q.settled === "yes") where.hotelPayoutStatus = "PAID";
+  if (q.settled === "no") where.hotelPayoutStatus = "UNPAID";
+  return where;
+}
+
+// GET /api/admin/accounting?start=YYYY-MM-DD&end=YYYY-MM-DD&hotelId=&settled=yes|no
+router.get("/accounting", async (req, res, next) => {
+  try {
+    const bookings = await prisma.booking.findMany({
+      where: ledgerWhere(req.query),
+      include: { hotel: { select: { nameFr: true, nameEn: true, commissionRate: true, contactEmail: true, contactPhone: true } } },
+      orderBy: { checkIn: "asc" },
+      take: 5000,
+    });
+    const lines = bookings.map(ledgerLine);
+
+    const sum = (k, f = () => true) => lines.filter(f).reduce((a, l) => a + (l[k] || 0), 0);
+    const summary = {
+      count: lines.length,
+      gross: sum("gross"),
+      commission: sum("commission"),
+      net: sum("net"),
+      collectedByNzzor: sum("gross", (l) => l.collectedBy === "NZZOR"),
+      collectedByHotels: sum("gross", (l) => l.collectedBy === "HOTEL"),
+      owedToHotels: sum("owedToHotel"),
+      owedByHotels: sum("owedByHotel"),
+    };
+
+    const byHotel = new Map();
+    for (const l of lines) {
+      if (!byHotel.has(l.hotelId)) {
+        const h = bookings.find((b) => b.hotelId === l.hotelId).hotel || {};
+        byHotel.set(l.hotelId, {
+          hotelId: l.hotelId, hotelName: l.hotelName, rate: h.commissionRate,
+          contactEmail: h.contactEmail || null, contactPhone: h.contactPhone || null,
+          count: 0, gross: 0, commission: 0, owedToHotel: 0, owedByHotel: 0,
+        });
+      }
+      const h = byHotel.get(l.hotelId);
+      h.count += 1; h.gross += l.gross; h.commission += l.commission;
+      h.owedToHotel += l.owedToHotel; h.owedByHotel += l.owedByHotel;
+    }
+    const hotels = [...byHotel.values()]
+      .map((h) => ({ ...h, balance: h.owedToHotel - h.owedByHotel }))
+      .sort((a, b) => Math.abs(b.balance) - Math.abs(a.balance));
+
+    res.json({ data: { summary, hotels, bookings: lines } });
+  } catch (err) { next(err); }
+});
+
+// POST /api/admin/accounting/settle   body: { bookingIds: [], reference?, paidAt? }
+// Marks bookings as settled with the hotel (transfer sent, or commission
+// received) and freezes their rate and commission.
+router.post("/accounting/settle", async (req, res, next) => {
+  try {
+    const ids = Array.isArray(req.body.bookingIds) ? req.body.bookingIds.slice(0, 1000) : [];
+    if (!ids.length) return res.status(400).json({ error: "No bookings selected" });
+    const reference = req.body.reference ? String(req.body.reference).slice(0, 120) : null;
+    const paidAt = req.body.paidAt ? new Date(`${req.body.paidAt}T12:00:00.000Z`) : new Date();
+
+    const bookings = await prisma.booking.findMany({
+      where: { ...ledgerWhere({}), id: { in: ids }, hotelPayoutStatus: "UNPAID" },
+      include: { hotel: { select: { commissionRate: true } } },
+    });
+    await prisma.$transaction(
+      bookings.map((b) => {
+        const l = ledgerLine(b);
+        return prisma.booking.update({
+          where: { id: b.id },
+          data: {
+            commissionRate: l.rate,
+            commissionAmount: l.commission,
+            hotelPayoutStatus: "PAID",
+            hotelPaidAt: paidAt,
+            hotelPayoutRef: reference,
+          },
+        });
+      })
+    );
+    res.json({ data: { settled: bookings.length }, message: `${bookings.length} booking(s) settled` });
+  } catch (err) { next(err); }
+});
+
+// POST /api/admin/accounting/unsettle   body: { bookingIds: [] }
+// Undo a settlement entered by mistake. The rate unfreezes too.
+router.post("/accounting/unsettle", async (req, res, next) => {
+  try {
+    const ids = Array.isArray(req.body.bookingIds) ? req.body.bookingIds.slice(0, 1000) : [];
+    if (!ids.length) return res.status(400).json({ error: "No bookings selected" });
+    const r = await prisma.booking.updateMany({
+      where: { id: { in: ids }, hotelPayoutStatus: "PAID" },
+      data: { hotelPayoutStatus: "UNPAID", hotelPaidAt: null, hotelPayoutRef: null, commissionRate: null, commissionAmount: null },
+    });
+    res.json({ data: { unsettled: r.count } });
+  } catch (err) { next(err); }
+});
+
+// GET /api/admin/accounting/rates — every hotel and its commission rate.
+router.get("/accounting/rates", async (req, res, next) => {
+  try {
+    const hotels = await prisma.hotel.findMany({
+      select: { id: true, nameFr: true, nameEn: true, city: true, commissionRate: true, isActive: true },
+      orderBy: { nameFr: "asc" },
+    });
+    res.json({ data: hotels });
+  } catch (err) { next(err); }
+});
+
+// PATCH /api/admin/hotels/:id/commission   body: { commissionRate: 0..50 }
+router.patch("/hotels/:id/commission", async (req, res, next) => {
+  try {
+    const rate = Number(req.body.commissionRate);
+    if (!Number.isFinite(rate) || rate < 0 || rate > 50) {
+      return res.status(400).json({ error: "Commission must be between 0 and 50 %" });
+    }
+    const h = await prisma.hotel.update({
+      where: { id: req.params.id },
+      data: { commissionRate: Math.round(rate * 100) / 100 },
+      select: { id: true, commissionRate: true },
+    });
+    res.json({ data: h });
+  } catch (err) { next(err); }
+});
+
 // POST /api/admin/bookings/:id/resend-confirmation
 // Sends the customer's voucher email and the hotel notification again, for a
 // confirmed booking whose emails went missing. Answers with which ones left.
