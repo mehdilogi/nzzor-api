@@ -517,7 +517,134 @@ async function sendPaymentReceipt({ to, receipt, lang = "fr" }) {
   }
 }
 
+// =============================================================================
+// Hotel notification — "you have a new confirmed booking"
+// -----------------------------------------------------------------------------
+// Sent to the hotel's contact email (Hotel.contactEmail) the moment a booking
+// becomes CONFIRMED, with the agency copied so Allouni always sees what the
+// hotel saw. French: it is the working language of Algerian hotel front desks.
+//
+// Takes the RAW Prisma booking (with hotel and rooms.room included), not the
+// formatted one, because the hotel needs fields the customer view hides:
+// guest phone, special requests, payment state.
+//
+// If the hotel has no contact email the agency still receives it, with a line
+// saying the hotel was not reached, so nobody assumes the hotel knows.
+// =============================================================================
+const AGENCY_EMAIL = process.env.AGENCY_EMAIL || "contact@nzzor.com";
+
+const BOARD_FR = {
+  ROOM_ONLY: "Chambre seule",
+  BREAKFAST: "Petit-déjeuner inclus",
+  HALF_BOARD: "Demi-pension",
+  FULL_BOARD: "Pension complète",
+  ALL_INCLUSIVE: "Tout compris",
+};
+const PAY_FR = {
+  PAID: "Payée en ligne (CIB / Edahabia via SATIM)",
+  PENDING: "Non payée",
+  FAILED: "Paiement échoué",
+  REFUNDED: "Remboursée",
+  PARTIALLY_REFUNDED: "Partiellement remboursée",
+};
+
+function esc(v) {
+  return String(v == null ? "" : v)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+function dzd(n) {
+  return new Intl.NumberFormat("fr-FR").format(Number(n) || 0).replace(/ | /g, " ") + " DA";
+}
+function dateFr(d) {
+  return new Intl.DateTimeFormat("fr-FR", {
+    weekday: "long", day: "numeric", month: "long", year: "numeric", timeZone: "UTC",
+  }).format(new Date(d));
+}
+
+async function sendHotelNotification(raw) {
+  const hotelEmail = raw.hotel && raw.hotel.contactEmail ? raw.hotel.contactEmail.trim() : "";
+  const to = hotelEmail ? [hotelEmail] : [AGENCY_EMAIL];
+  const cc = hotelEmail ? [AGENCY_EMAIL] : undefined;
+  const hotelName = (raw.hotel && (raw.hotel.nameFr || raw.hotel.nameEn)) || "";
+
+  if (!resend) {
+    console.log(`[emailService] (disabled) would send hotel notification for ${raw.reference} to ${to.join(", ")}`);
+    return null;
+  }
+
+  const roomsRows = (raw.rooms || []).map((br) => {
+    const name = (br.room && (br.room.typeFr || br.room.typeEn)) || "Chambre";
+    const board = BOARD_FR[br.board || "ROOM_ONLY"] || br.board || "";
+    return `<tr><td style="padding:6px 0">${esc(br.quantity)} × ${esc(name)}</td><td style="padding:6px 0;text-align:right;color:#555">${esc(board)} · ${esc(dzd(br.pricePerNight))} / nuit</td></tr>`;
+  }).join("");
+
+  const row = (label, value) =>
+    `<tr><td style="padding:7px 0;color:#777;width:170px">${esc(label)}</td><td style="padding:7px 0;font-weight:600">${value}</td></tr>`;
+
+  const html = `<!doctype html><html lang="fr"><body style="margin:0;background:#f5f3ef;font-family:Arial,Helvetica,sans-serif;color:#16161a">
+<div style="max-width:600px;margin:0 auto;padding:28px 16px">
+  <div style="background:#fff;border-radius:14px;padding:28px">
+    <div style="font-size:12px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:#E63946">Nouvelle réservation confirmée</div>
+    <h1 style="font-size:24px;margin:10px 0 4px">${esc(raw.reference)}</h1>
+    <div style="color:#555;margin-bottom:20px">${esc(hotelName)}</div>
+    ${hotelEmail ? "" : `<div style="background:#fdecee;color:#a3202c;padding:12px 14px;border-radius:8px;margin-bottom:18px;font-size:14px"><b>Cet hôtel n'a pas d'adresse e-mail dans l'admin.</b> Il n'a pas reçu ce message : prévenez-le par téléphone ou WhatsApp.</div>`}
+    <table style="width:100%;border-collapse:collapse;font-size:14px">
+      ${row("Client", esc(`${raw.guestFirstName || ""} ${raw.guestLastName || ""}`.trim()))}
+      ${row("Téléphone", esc(raw.guestPhone))}
+      ${row("E-mail", esc(raw.guestEmail))}
+      ${row("Arrivée", esc(dateFr(raw.checkIn)))}
+      ${row("Départ", esc(dateFr(raw.checkOut)))}
+      ${row("Nuits", esc(raw.nights))}
+    </table>
+    <div style="border-top:1px solid #eee;margin:16px 0"></div>
+    <table style="width:100%;border-collapse:collapse;font-size:14px">${roomsRows}</table>
+    <div style="border-top:1px solid #eee;margin:16px 0"></div>
+    <table style="width:100%;border-collapse:collapse;font-size:14px">
+      ${row("Total", esc(dzd(raw.total)))}
+      ${row("Paiement", esc(PAY_FR[raw.paymentStatus] || raw.paymentStatus || ""))}
+      ${raw.specialRequests ? row("Demandes du client", esc(raw.specialRequests)) : ""}
+    </table>
+    <p style="font-size:13px;color:#777;line-height:1.6;margin:22px 0 0">Merci de préparer la chambre pour l'arrivée du client. Pour toute question, répondez à cet e-mail ou contactez Allouni Travel Agency au 0770 08 08 30.</p>
+  </div>
+  <div style="text-align:center;font-size:12px;color:#999;margin-top:14px">Nzzor · Allouni Travel Agency · Sétif</div>
+</div></body></html>`;
+
+  const text = [
+    `Nouvelle réservation confirmée — ${raw.reference}`,
+    hotelName,
+    hotelEmail ? "" : "ATTENTION : cet hôtel n'a pas d'e-mail dans l'admin, il n'a pas reçu ce message.",
+    `Client : ${raw.guestFirstName || ""} ${raw.guestLastName || ""} · ${raw.guestPhone || ""} · ${raw.guestEmail || ""}`,
+    `Arrivée : ${dateFr(raw.checkIn)} · Départ : ${dateFr(raw.checkOut)} · ${raw.nights} nuit(s)`,
+    ...(raw.rooms || []).map((br) => `${br.quantity} × ${(br.room && (br.room.typeFr || br.room.typeEn)) || "Chambre"} — ${BOARD_FR[br.board || "ROOM_ONLY"] || ""}`),
+    `Total : ${dzd(raw.total)} · ${PAY_FR[raw.paymentStatus] || raw.paymentStatus || ""}`,
+    raw.specialRequests ? `Demandes : ${raw.specialRequests}` : "",
+  ].filter(Boolean).join("\n");
+
+  try {
+    const result = await resend.emails.send({
+      from: fromAddress,
+      to,
+      ...(cc ? { cc } : {}),
+      subject: `Nouvelle réservation ${raw.reference} · ${hotelName} · ${dateFr(raw.checkIn)}`,
+      html,
+      text,
+      replyTo: "bookings@nzzor.com",
+      tags: [{ name: "category", value: "hotel_notification" }],
+    });
+    if (result.error) {
+      console.error(`[emailService] Resend error for hotel notification ${raw.reference}:`, result.error);
+      return null;
+    }
+    console.log(`[emailService] sent hotel notification for ${raw.reference} → ${to.join(", ")}${cc ? " (cc " + cc.join(", ") + ")" : ""} (id: ${result.data?.id})`);
+    return result.data?.id || null;
+  } catch (err) {
+    console.error(`[emailService] failed to send hotel notification for ${raw.reference}:`, err);
+    return null;
+  }
+}
+
 module.exports = {
+  sendHotelNotification,
   sendPaymentReceipt,
   sendBookingCreated,
   sendBookingConfirmed,

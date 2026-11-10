@@ -54,6 +54,17 @@ const emailService = require("./emailService");
 //   nothing the customer needs to act on)
 //
 const STATUS_EMAIL_RULES = {
+  // Card bookings. PENDING_PAYMENT was added for SATIM after this table was
+  // written and never got a row, so every paid card booking logged "no email
+  // rule for PENDING_PAYMENT→CONFIRMED" and the customer never received the
+  // voucher. A booking whose first card was declined (PAYMENT_FAILED) and
+  // whose retry succeeded takes the same path.
+  PENDING_PAYMENT: {
+    CONFIRMED: "sendBookingConfirmed",
+  },
+  PAYMENT_FAILED: {
+    CONFIRMED: "sendBookingConfirmed",
+  },
   PENDING: {
     CONFIRMED: "sendBookingConfirmed",
     REJECTED: "sendBookingRejected",
@@ -143,7 +154,7 @@ async function transitionBookingStatus({ bookingId, newStatus, actor, reason, la
       transition: `${previousStatus}→${newStatus}`,
       actor,
     });
-  } else {
+  } else if (previousStatus !== newStatus) {
     // Useful for ops visibility — we don't fail, but we log so it's clear
     // why no email went out for a particular transition.
     console.log(
@@ -152,7 +163,46 @@ async function transitionBookingStatus({ bookingId, newStatus, actor, reason, la
     );
   }
 
+  // The hotel learns about every booking the moment it becomes CONFIRMED,
+  // whatever the path (card payment, admin confirm, Sur Demande accepted).
+  // Only on a real transition, so re-saving a confirmed booking never sends
+  // the hotel a duplicate.
+  if (newStatus === "CONFIRMED" && previousStatus !== "CONFIRMED") {
+    fireAndForgetHotel(booking, `${previousStatus}→CONFIRMED`);
+  }
+
   return formatted;
+}
+
+/**
+ * Send the confirmation again: the customer's voucher email and the hotel
+ * notification. For the admin's "Resend" button, when an email went missing
+ * (wrong address, spam, the bug above). Confirmed bookings only. Awaited, so
+ * the admin is told whether each one actually left.
+ *
+ * @returns {Promise<{ guest: string|null, hotel: string|null }>} Resend ids
+ */
+async function resendConfirmation(bookingId) {
+  const booking = await prisma.booking.findUnique({
+    where: { id: bookingId },
+    include: BOOKING_INCLUDE,
+  });
+  if (!booking) {
+    const err = new Error("Booking not found");
+    err.statusCode = 404;
+    throw err;
+  }
+  if (booking.status !== "CONFIRMED") {
+    const err = new Error(`Only confirmed bookings can be resent (status is ${booking.status})`);
+    err.statusCode = 400;
+    throw err;
+  }
+  const lang = booking.lang || "fr";
+  const formatted = formatBooking(booking, lang);
+  const guest = await emailService.sendBookingConfirmed(formatted, lang).catch(() => null);
+  const hotel = await emailService.sendHotelNotification(booking).catch(() => null);
+  console.log(`[bookingService] resent confirmation for ${booking.reference}: guest=${guest ? "sent" : "failed"}, hotel=${hotel ? "sent" : "failed"}`);
+  return { guest, hotel };
 }
 
 /**
@@ -281,8 +331,24 @@ function fireAndForget(senderFnName, formattedBooking, lang, context) {
   });
 }
 
+// Hotel notification, same fire-and-forget contract as the guest emails.
+function fireAndForgetHotel(rawBooking, transition) {
+  setImmediate(async () => {
+    try {
+      if (typeof emailService.sendHotelNotification !== "function") {
+        console.error(`[bookingService] sendHotelNotification missing (${rawBooking.reference})`);
+        return;
+      }
+      await emailService.sendHotelNotification(rawBooking);
+    } catch (err) {
+      console.error(`[bookingService] hotel notification threw for ${rawBooking.reference} (${transition}):`, err);
+    }
+  });
+}
+
 module.exports = {
   transitionBookingStatus,
+  resendConfirmation,
   transitionBookingPayment,
   notifyBookingCreated,
   notifyBookingRequested,
