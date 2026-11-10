@@ -8,6 +8,11 @@ const { startOfTodayInAlgiers, endOfTodayInAlgiers } = require("../utils/dates")
 
 router.use(requireAuth, requireAdmin);
 
+// Every count, total and list in the admin is built on real bookings only.
+// Test bookings (isTest) stay in the database for SATIM and the bank, and can
+// still be listed with ?includeTest=1, but never move a number.
+const REAL = { isTest: false };
+
 router.get("/dashboard", async (req, res, next) => {
   try {
     const now = new Date();
@@ -20,15 +25,16 @@ router.get("/dashboard", async (req, res, next) => {
     ] = await Promise.all([
       prisma.hotel.count({ where: { isActive: true } }),
       prisma.room.count({ where: { isActive: true } }),
-      prisma.booking.count(),
-      prisma.booking.count({ where: { createdAt: { gte: sevenDaysAgo } } }),
-      prisma.booking.groupBy({ by: ["status"], _count: { id: true } }),
-      prisma.booking.aggregate({ where: { status: { in: ["CONFIRMED", "COMPLETED"] } }, _sum: { total: true } }),
-      prisma.booking.aggregate({ where: { status: { in: ["CONFIRMED", "COMPLETED"] }, createdAt: { gte: thirtyDaysAgo } }, _sum: { total: true } }),
-      prisma.booking.aggregate({ where: { status: { in: ["CONFIRMED", "COMPLETED"] }, createdAt: { gte: sevenDaysAgo } }, _sum: { total: true } }),
+      // isTest: false everywhere — test bookings never count. See schema.prisma.
+      prisma.booking.count({ where: REAL }),
+      prisma.booking.count({ where: { ...REAL, createdAt: { gte: sevenDaysAgo } } }),
+      prisma.booking.groupBy({ by: ["status"], where: REAL, _count: { id: true } }),
+      prisma.booking.aggregate({ where: { ...REAL, status: { in: ["CONFIRMED", "COMPLETED"] } }, _sum: { total: true } }),
+      prisma.booking.aggregate({ where: { ...REAL, status: { in: ["CONFIRMED", "COMPLETED"] }, createdAt: { gte: thirtyDaysAgo } }, _sum: { total: true } }),
+      prisma.booking.aggregate({ where: { ...REAL, status: { in: ["CONFIRMED", "COMPLETED"] }, createdAt: { gte: sevenDaysAgo } }, _sum: { total: true } }),
       prisma.booking.groupBy({
         by: ["hotelId"],
-        where: { status: { in: ["CONFIRMED", "COMPLETED"] } },
+        where: { ...REAL, status: { in: ["CONFIRMED", "COMPLETED"] } },
         _count: { id: true },
         _sum: { total: true },
         orderBy: { _count: { id: "desc" } },
@@ -101,12 +107,12 @@ router.get("/today", async (req, res, next) => {
       paidTodayRevenue,
       recentTransitions,
     ] = await Promise.all([
-      prisma.booking.count({ where: { createdAt: todayWindow } }),
-      prisma.booking.count({ where: { confirmedAt: todayWindow } }),
-      prisma.booking.count({ where: { cancelledAt: todayWindow } }),
+      prisma.booking.count({ where: { ...REAL, createdAt: todayWindow } }),
+      prisma.booking.count({ where: { ...REAL, confirmedAt: todayWindow } }),
+      prisma.booking.count({ where: { ...REAL, cancelledAt: todayWindow } }),
       // Revenue locked in today via confirmations
       prisma.booking.aggregate({
-        where: { confirmedAt: todayWindow, status: "CONFIRMED" },
+        where: { ...REAL, confirmedAt: todayWindow, status: "CONFIRMED" },
         _sum: { total: true },
       }),
       // Latest ~15 bookings touched today, regardless of which lifecycle
@@ -114,6 +120,7 @@ router.get("/today", async (req, res, next) => {
       // timestamps so we can show "what changed" without separate queries.
       prisma.booking.findMany({
         where: {
+          ...REAL,
           OR: [
             { createdAt: todayWindow },
             { confirmedAt: todayWindow },
@@ -171,7 +178,8 @@ router.get("/bookings", async (req, res, next) => {
     const { skip, take, page, limit } = paginate(req.query);
     const lang = req.query.lang || "en";
 
-    const where = {};
+    // Test bookings are hidden unless asked for explicitly.
+    const where = req.query.includeTest === "1" ? {} : { ...REAL };
     if (req.query.status) where.status = req.query.status;
     if (req.query.paymentStatus) where.paymentStatus = req.query.paymentStatus;
     if (req.query.hotelId) where.hotelId = req.query.hotelId;
@@ -463,6 +471,7 @@ router.get("/users", async (req, res, next) => {
       // is what we want — emails are case-insensitive identifiers.
       const matching = await prisma.booking.findMany({
         where: {
+          ...REAL,
           OR: [
             { userId: { in: userIds } },
             { guestEmail: { in: userEmails, mode: "insensitive" } },
