@@ -283,19 +283,45 @@ router.patch("/bookings/:id/status", async (req, res, next) => {
 //                       the gross and OWES Nzzor the commission.
 // hotelPayoutStatus marks either direction as settled (UNPAID -> PAID).
 //
-// Rate and commission are frozen on the booking when it is settled, so
-// changing a hotel's rate later never rewrites history. Unsettled bookings
-// follow the hotel's current rate.
+// Commission per hotel is either:
+//   PERCENT         — commissionRate % of the gross
+//   FIXED_PER_NIGHT — commissionFixed DA x room-nights (rooms x nights)
+// Amount and basis are frozen on the booking when it is settled, so changing
+// a hotel's terms later never rewrites history. Unsettled bookings follow the
+// hotel's current terms.
 // =============================================================================
 
 const ONLINE_METHODS = ["CIB", "EDDAHABIA", "BANK_TRANSFER"];
 const HOTEL_METHODS = ["CASH", "WHATSAPP_ASSISTED"];
 
+const fmtDA = (n) => new Intl.NumberFormat("fr-FR").format(n).replace(/\u202f|\u00a0/g, " ");
+
+function currentTerms(b) {
+  const h = b.hotel || {};
+  const gross = b.total || 0;
+  const roomNights = (b.rooms || []).reduce((a, r) => a + (r.quantity || 1), 0) * (b.nights || 0);
+  if (h.commissionType === "FIXED_PER_NIGHT") {
+    const per = h.commissionFixed || 0;
+    return {
+      rate: null,
+      // Never more than the gross, whatever the fixed amount says.
+      commission: Math.min(gross, per * roomNights),
+      basis: `${fmtDA(per)} DA / nuit × ${roomNights}`,
+    };
+  }
+  const rate = h.commissionRate || 0;
+  return { rate, commission: Math.round((gross * rate) / 100), basis: `${rate} %` };
+}
+
 function ledgerLine(b) {
   const collectedBy = ONLINE_METHODS.includes(b.paymentMethod) ? "NZZOR" : "HOTEL";
-  const rate = b.commissionRate != null ? b.commissionRate : (b.hotel ? b.hotel.commissionRate : 0);
   const gross = b.total || 0;
-  const commission = b.commissionAmount != null ? b.commissionAmount : Math.round((gross * (rate || 0)) / 100);
+  const frozen = b.commissionAmount != null;
+  const terms = frozen
+    ? { rate: b.commissionRate, commission: b.commissionAmount, basis: b.commissionBasis || (b.commissionRate != null ? `${b.commissionRate} %` : "") }
+    : currentTerms(b);
+  const rate = terms.rate;
+  const commission = terms.commission;
   const net = gross - commission;
   const settled = b.hotelPayoutStatus === "PAID";
   return {
@@ -322,7 +348,8 @@ function ledgerLine(b) {
     settled,
     hotelPaidAt: b.hotelPaidAt,
     hotelPayoutRef: b.hotelPayoutRef,
-    rateFrozen: b.commissionRate != null,
+    basis: terms.basis,
+    rateFrozen: frozen,
   };
 }
 
@@ -353,7 +380,10 @@ router.get("/accounting", async (req, res, next) => {
   try {
     const bookings = await prisma.booking.findMany({
       where: ledgerWhere(req.query),
-      include: { hotel: { select: { nameFr: true, nameEn: true, commissionRate: true, contactEmail: true, contactPhone: true } } },
+      include: {
+        hotel: { select: { nameFr: true, nameEn: true, commissionType: true, commissionRate: true, commissionFixed: true, contactEmail: true, contactPhone: true } },
+        rooms: { select: { quantity: true } },
+      },
       orderBy: { checkIn: "asc" },
       take: 5000,
     });
@@ -377,6 +407,7 @@ router.get("/accounting", async (req, res, next) => {
         const h = bookings.find((b) => b.hotelId === l.hotelId).hotel || {};
         byHotel.set(l.hotelId, {
           hotelId: l.hotelId, hotelName: l.hotelName, rate: h.commissionRate,
+          terms: h.commissionType === "FIXED_PER_NIGHT" ? `${fmtDA(h.commissionFixed || 0)} DA / nuit` : `${h.commissionRate} %`,
           contactEmail: h.contactEmail || null, contactPhone: h.contactPhone || null,
           count: 0, gross: 0, commission: 0, owedToHotel: 0, owedByHotel: 0,
         });
@@ -405,7 +436,10 @@ router.post("/accounting/settle", async (req, res, next) => {
 
     const bookings = await prisma.booking.findMany({
       where: { ...ledgerWhere({}), id: { in: ids }, hotelPayoutStatus: "UNPAID" },
-      include: { hotel: { select: { commissionRate: true } } },
+      include: {
+        hotel: { select: { commissionType: true, commissionRate: true, commissionFixed: true } },
+        rooms: { select: { quantity: true } },
+      },
     });
     await prisma.$transaction(
       bookings.map((b) => {
@@ -415,6 +449,7 @@ router.post("/accounting/settle", async (req, res, next) => {
           data: {
             commissionRate: l.rate,
             commissionAmount: l.commission,
+            commissionBasis: l.basis,
             hotelPayoutStatus: "PAID",
             hotelPaidAt: paidAt,
             hotelPayoutRef: reference,
@@ -434,7 +469,7 @@ router.post("/accounting/unsettle", async (req, res, next) => {
     if (!ids.length) return res.status(400).json({ error: "No bookings selected" });
     const r = await prisma.booking.updateMany({
       where: { id: { in: ids }, hotelPayoutStatus: "PAID" },
-      data: { hotelPayoutStatus: "UNPAID", hotelPaidAt: null, hotelPayoutRef: null, commissionRate: null, commissionAmount: null },
+      data: { hotelPayoutStatus: "UNPAID", hotelPaidAt: null, hotelPayoutRef: null, commissionRate: null, commissionAmount: null, commissionBasis: null },
     });
     res.json({ data: { unsettled: r.count } });
   } catch (err) { next(err); }
@@ -444,24 +479,37 @@ router.post("/accounting/unsettle", async (req, res, next) => {
 router.get("/accounting/rates", async (req, res, next) => {
   try {
     const hotels = await prisma.hotel.findMany({
-      select: { id: true, nameFr: true, nameEn: true, city: true, commissionRate: true, isActive: true },
+      select: { id: true, nameFr: true, nameEn: true, city: true, commissionType: true, commissionRate: true, commissionFixed: true, isActive: true },
       orderBy: { nameFr: "asc" },
     });
     res.json({ data: hotels });
   } catch (err) { next(err); }
 });
 
-// PATCH /api/admin/hotels/:id/commission   body: { commissionRate: 0..50 }
+// PATCH /api/admin/hotels/:id/commission
+//   body: { commissionType: "PERCENT", commissionRate: 0..50 }
+//      or { commissionType: "FIXED_PER_NIGHT", commissionFixed: DA per room per night }
 router.patch("/hotels/:id/commission", async (req, res, next) => {
   try {
-    const rate = Number(req.body.commissionRate);
-    if (!Number.isFinite(rate) || rate < 0 || rate > 50) {
-      return res.status(400).json({ error: "Commission must be between 0 and 50 %" });
+    const type = req.body.commissionType === "FIXED_PER_NIGHT" ? "FIXED_PER_NIGHT" : "PERCENT";
+    const data = { commissionType: type };
+    if (type === "PERCENT") {
+      const rate = Number(req.body.commissionRate);
+      if (!Number.isFinite(rate) || rate < 0 || rate > 50) {
+        return res.status(400).json({ error: "Commission must be between 0 and 50 %" });
+      }
+      data.commissionRate = Math.round(rate * 100) / 100;
+    } else {
+      const fixed = Math.round(Number(req.body.commissionFixed));
+      if (!Number.isFinite(fixed) || fixed < 0 || fixed > 100000) {
+        return res.status(400).json({ error: "Fixed commission must be between 0 and 100 000 DA per night" });
+      }
+      data.commissionFixed = fixed;
     }
     const h = await prisma.hotel.update({
       where: { id: req.params.id },
-      data: { commissionRate: Math.round(rate * 100) / 100 },
-      select: { id: true, commissionRate: true },
+      data,
+      select: { id: true, commissionType: true, commissionRate: true, commissionFixed: true },
     });
     res.json({ data: h });
   } catch (err) { next(err); }
