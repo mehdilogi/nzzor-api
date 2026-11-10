@@ -1,5 +1,9 @@
--- Commission per hotel can be a percent of the gross or a fixed amount per
--- room per night.
-ALTER TABLE "hotels" ADD COLUMN IF NOT EXISTS "commissionType" TEXT NOT NULL DEFAULT 'PERCENT';
-ALTER TABLE "hotels" ADD COLUMN IF NOT EXISTS "commissionFixed" INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE "bookings" ADD COLUMN IF NOT EXISTS "commissionBasis" TEXT;
+-- Bookkeeping: commission per hotel, payout tracking per booking.
+ALTER TABLE "hotels" ADD COLUMN IF NOT EXISTS "commissionRate" DOUBLE PRECISION NOT NULL DEFAULT 10;
+
+ALTER TABLE "bookings" ADD COLUMN IF NOT EXISTS "commissionRate" DOUBLE PRECISION;
+ALTER TABLE "bookings" ADD COLUMN IF NOT EXISTS "commissionAmount" INTEGER;
+ALTER TABLE "bookings" ADD COLUMN IF NOT EXISTS "hotelPayoutStatus" TEXT NOT NULL DEFAULT 'UNPAID';
+ALTER TABLE "bookings" ADD COLUMN IF NOT EXISTS "hotelPaidAt" TIMESTAMP(3);
+ALTER TABLE "bookings" ADD COLUMN IF NOT EXISTS "hotelPayoutRef" TEXT;
+CREATE INDEX IF NOT EXISTS "bookings_hotelPayoutStatus_idx" ON "bookings"("hotelPayoutStatus");
