@@ -158,9 +158,13 @@ model Hotel {
   // booking, no SATIM payment. Distinct from isActive, which hides the hotel.
   // Enforced server-side at payment initiation, not just by hiding buttons.
   onlineBooking Boolean @default(true)
-  // Nzzor's commission on this hotel's bookings, in percent of the gross
-  // (the price the customer pays). Set per hotel in Admin → Accounting.
-  commissionRate Float  @default(10)
+  // Nzzor's commission on this hotel's bookings. Set per hotel in
+  // Admin → Accounting. Two models:
+  //   PERCENT         — commissionRate % of the gross (what the customer pays)
+  //   FIXED_PER_NIGHT — commissionFixed DA per room per night
+  commissionType  String @default("PERCENT")
+  commissionRate  Float  @default(10)
+  commissionFixed Int    @default(0)
   sortOrder     Int     @default(0)
 
   // AI-search tags — see TAG_DICTIONARY in src/utils/tags.js for canonical keys
@@ -448,6 +452,7 @@ model Booking {
   // out, so changing a hotel's rate later never rewrites settled history.
   commissionRate    Float?
   commissionAmount  Int?
+  commissionBasis   String?                        // frozen label: "10 %" or "500 DA / nuit"
   hotelPayoutStatus String    @default("UNPAID")   // UNPAID | PAID
   hotelPaidAt       DateTime?
   hotelPayoutRef    String?                        // transfer / cheque number
