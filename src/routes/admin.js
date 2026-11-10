@@ -270,6 +270,24 @@ router.patch("/bookings/:id/status", async (req, res, next) => {
   }
 });
 
+// POST /api/admin/bookings/:id/resend-confirmation
+// Sends the customer's voucher email and the hotel notification again, for a
+// confirmed booking whose emails went missing. Answers with which ones left.
+router.post("/bookings/:id/resend-confirmation", async (req, res, next) => {
+  try {
+    const result = await bookingService.resendConfirmation(req.params.id);
+    res.json({
+      data: { guestSent: Boolean(result.guest), hotelSent: Boolean(result.hotel) },
+      message: "Confirmation resent",
+    });
+  } catch (err) {
+    if (err.statusCode === 404 || err.statusCode === 400) {
+      return res.status(err.statusCode).json({ error: err.message });
+    }
+    next(err);
+  }
+});
+
 // PATCH /api/admin/bookings/:id/payment
 // Mark the booking's payment status. Used by the Allouni team once cash has
 // been counted on arrival, a bank transfer has cleared, or a CIB charge has
