@@ -84,7 +84,9 @@ async function computeOverview(start, end) {
       select: { visitorId: true },
       distinct: ["visitorId"],
     }),
-    prisma.booking.count({ where: { createdAt: { gte: start, lte: end } } }),
+    // Test bookings (isTest) never count. Views and sessions keep their full
+    // history; only the booking count and conversion rate change.
+    prisma.booking.count({ where: { createdAt: { gte: start, lte: end }, isTest: false } }),
   ]);
 
   const uniqueVisitors = uniqueVisitorsRaw.length;
