@@ -217,6 +217,26 @@ router.post("/", optionalAuth, async (req, res, next) => {
     const preCheck = await checkAvailability(data.rooms, checkIn, checkOut);
     const isOnRequest = !preCheck.available;
 
+    // A card payment can never take the ON_REQUEST path. ON_REQUEST bookings
+    // are not payable (payments.js only accepts PENDING_PAYMENT, PENDING and
+    // PAYMENT_FAILED), so creating one here produced a booking the customer
+    // could not pay, a "we'll confirm by 12:00 tomorrow" email for money that
+    // was never taken, and a dead-end "cannot be paid" box at checkout.
+    // Refuse cleanly instead: nothing is created, nothing is emailed, and the
+    // customer is told to pick other dates or ask us on WhatsApp.
+    if (isCard && isOnRequest) {
+      const NOT_AVAILABLE = {
+        fr: "Cette chambre n'est plus disponible en ligne pour ces dates. Choisissez d'autres dates ou contactez-nous sur WhatsApp, nous vous trouvons une solution.",
+        ar: "هذه الغرفة لم تعد متاحة للحجز عبر الإنترنت في هذه التواريخ. اختر تواريخ أخرى أو راسلنا عبر واتساب وسنجد لك حلاً.",
+        en: "This room is no longer available online for these dates. Choose other dates or message us on WhatsApp and we will find you an option.",
+      };
+      return res.status(409).json({
+        error: NOT_AVAILABLE[data.lang] || NOT_AVAILABLE.fr,
+        code: "NOT_AVAILABLE_ONLINE",
+        conflicts: preCheck.conflicts || undefined,
+      });
+    }
+
     // -------- Atomic: reserve inventory, generate ref, insert booking ----
     // The transaction ensures NO race condition between two simultaneous
     // bookings for the last room. assertAvailableInTransaction takes a
@@ -252,10 +272,7 @@ router.post("/", optionalAuth, async (req, res, next) => {
           attempts++;
         } while (attempts < 10);
 
-        // Status resolution:
-        //   on-request  -> ON_REQUEST (awaiting hotel confirmation)
-        //   cash         -> CONFIRMED (auto)
-        //   otherwise    -> PENDING (awaiting payment)
+        // Status resolution (card + on-request never reaches here, see above):
         //   on-request  -> ON_REQUEST (hotel confirms before any payment)
         //   cash        -> CONFIRMED
         //   card        -> PENDING_PAYMENT (SATIM decides)
