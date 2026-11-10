@@ -435,7 +435,12 @@ model Booking {
   @@index([hotelId, checkIn, checkOut])
   @@index([userId])
   @@index([status])
+  // true = a test booking (SATIM recette, staff trials). Kept for the record
+  // and for SATIM/bank questions, excluded from every admin count and total.
+  isTest          Boolean       @default(false)
+
   @@index([createdAt])
+  @@index([isTest])
   @@map("bookings")
 }
 
