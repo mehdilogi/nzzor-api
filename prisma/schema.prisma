@@ -157,7 +157,7 @@ model Hotel {
   // false = still listed and searchable, but sold by WhatsApp only: no online
   // booking, no SATIM payment. Distinct from isActive, which hides the hotel.
   // Enforced server-side at payment initiation, not just by hiding buttons.
-  onlineBooking Boolean @default(true)
+  onlineBooking Boolean @default(false)
   // Nzzor's commission on this hotel's bookings. Set per hotel in
   // Admin → Accounting. Two models:
   //   PERCENT         — commissionRate % of the gross (what the customer pays)
