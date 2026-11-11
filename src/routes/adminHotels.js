@@ -95,6 +95,11 @@ const hotelSchema = z.object({
   verifiedPartner: z.boolean().default(true),
   isActive: z.boolean().default(true),
   isFeatured: z.boolean().default(false),
+  // Contract with Nzzor. true = online booking + SATIM payment; false = the
+  // hotel is listed but booked over WhatsApp. Missing from this schema before,
+  // so zod stripped it and the admin toggle never saved. New hotels start
+  // without a contract.
+  onlineBooking: z.boolean().default(false),
   // AI-search tags — filter to only known keys so the data stays clean
   tags: z.array(z.string()).optional().transform((arr) => (arr || []).filter((k) => TAG_KEYS.includes(k))),
 });

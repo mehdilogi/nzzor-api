@@ -207,6 +207,20 @@ router.post("/", optionalAuth, async (req, res, next) => {
     const isCard = CARD_METHODS.includes(data.paymentMethod);
     const autoConfirm = data.paymentMethod === "CASH";
 
+    // No contract with Nzzor = no online booking. The site sends these guests
+    // to WhatsApp before checkout; this is the server-side guarantee.
+    if (hotel.onlineBooking === false) {
+      const WA_ONLY = {
+        fr: "Cet hôtel se réserve via WhatsApp. Contactez-nous, nous réservons et confirmons pour vous.",
+        ar: "يتم حجز هذا الفندق عبر واتساب. راسلنا وسنتولى الحجز والتأكيد لك.",
+        en: "This hotel is booked over WhatsApp. Message us and we will book and confirm it for you.",
+      };
+      return res.status(409).json({
+        error: WA_ONLY[data.lang] || WA_ONLY.fr,
+        code: "ONLINE_BOOKING_DISABLED",
+      });
+    }
+
     // -------- Availability decides PENDING vs ON_REQUEST ------------------
     // Per the booking-engine design: if enough units are free, this is a
     // normal booking that HOLDS inventory (PENDING/CONFIRMED). If units are

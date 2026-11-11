@@ -50,7 +50,15 @@ function buildWhere(query, omit = []) {
   const where = { isActive: true };
 
   if (query.city && !skip("city")) where.city = String(query.city).toLowerCase();
-  if (query.stars && !skip("stars")) where.stars = { gte: parseInt(query.stars) };
+  // "nc" is non-classé — an exact 0, not a floor. Algeria has a lot of stock
+  // that was never rated, and it has to be reachable without also matching
+  // every classified hotel. The URL value is "nc" rather than 0 because the
+  // frontend drops zero-valued params when it builds the query string.
+  if (query.stars && !skip("stars")) {
+    where.stars = String(query.stars).toLowerCase() === "nc"
+      ? 0
+      : { gte: parseInt(query.stars) };
+  }
   if (query.featured === "true") where.isFeatured = true;
 
   // Tags can arrive as a comma-separated string ("beach,family") or as repeated
@@ -117,19 +125,71 @@ router.get("/", async (req, res, next) => {
 
     const where = buildWhere(req.query);
 
-    let orderBy;
-    switch (req.query.sort) {
-      case "price_asc": orderBy = { rooms: { _min: { basePrice: "asc" } } }; break;
-      case "price_desc": orderBy = { rooms: { _min: { basePrice: "desc" } } }; break;
-      case "rating": orderBy = { rating: "desc" }; break;
-      case "stars": orderBy = { stars: "desc" }; break;
-      default: orderBy = [{ isFeatured: "desc" }, { reviewCount: "desc" }];
-    }
+    // PRICE SORTS ARE DONE IN JS, NOT IN PRISMA.
+    //
+    // This used to be `orderBy: { rooms: { _min: { basePrice } } }`, which
+    // looks reasonable and is not valid: ordering by a to-many relation only
+    // supports `_count`. Every request for "price: low to high" or "high to
+    // low" threw, and the listing showed an error instead of results — since
+    // the day the line was written.
+    //
+    // So for those two sorts: fetch only id + active room prices for the whole
+    // filtered set, compute each hotel's cheapest room (which is exactly what
+    // the card displays as priceFrom), sort, slice the requested page, then
+    // load full card data for just those ids and put them back in order.
+    //
+    // Hotels with no priced active room always sort LAST, in both directions —
+    // otherwise "high to low" would open on a page of "0 DZD" listings.
+    //
+    // At ~220 hotels the whole set is a few kilobytes. Past a few thousand,
+    // denormalise the cheapest price onto Hotel instead of doing this.
+    const priceSort = req.query.sort === "price_asc" || req.query.sort === "price_desc";
 
-    const [hotels, total] = await Promise.all([
-      prisma.hotel.findMany({ where, include: LIST_INCLUDE, orderBy, skip, take }),
-      prisma.hotel.count({ where }),
-    ]);
+    let hotels;
+    let total;
+
+    if (priceSort) {
+      const asc = req.query.sort === "price_asc";
+      const all = await prisma.hotel.findMany({
+        where,
+        select: { id: true, onlineBooking: true, rooms: { where: { isActive: true }, select: { basePrice: true } } },
+      });
+      // Contracted hotels (bookable online) first, then the WhatsApp-only
+      // ones, then hotels with no price at all.
+      const priced = [];
+      const pricedWa = [];
+      const unpriced = [];
+      for (const h of all) {
+        const prices = h.rooms.map((r) => Number(r.basePrice)).filter((p) => p > 0);
+        if (!prices.length) unpriced.push({ id: h.id, p: null });
+        else if (h.onlineBooking === false) pricedWa.push({ id: h.id, p: Math.min(...prices) });
+        else priced.push({ id: h.id, p: Math.min(...prices) });
+      }
+      const cmp = (a, b) => (asc ? a.p - b.p : b.p - a.p);
+      priced.sort(cmp);
+      pricedWa.sort(cmp);
+      const ordered = priced.concat(pricedWa, unpriced);
+      total = ordered.length;
+
+      const pageIds = ordered.slice(skip, skip + take).map((x) => x.id);
+      const rows = pageIds.length
+        ? await prisma.hotel.findMany({ where: { id: { in: pageIds } }, include: LIST_INCLUDE })
+        : [];
+      const byId = new Map(rows.map((r) => [r.id, r]));
+      hotels = pageIds.map((id) => byId.get(id)).filter(Boolean);
+    } else {
+      let orderBy;
+      switch (req.query.sort) {
+        // Contracted hotels (bookable online) always lead.
+        case "rating": orderBy = [{ onlineBooking: "desc" }, { rating: "desc" }]; break;
+        case "stars": orderBy = [{ onlineBooking: "desc" }, { stars: "desc" }]; break;
+        default: orderBy = [{ onlineBooking: "desc" }, { isFeatured: "desc" }, { reviewCount: "desc" }];
+      }
+      [hotels, total] = await Promise.all([
+        prisma.hotel.findMany({ where, include: LIST_INCLUDE, orderBy, skip, take }),
+        prisma.hotel.count({ where }),
+      ]);
+    }
 
     res.json({
       data: hotels.map(h => formatHotelCard(h, lang)),
@@ -223,6 +283,9 @@ router.get("/meta/facets", async (req, res, next) => {
       data: {
         total,
         stars,
+        // Counted on its own: the cumulative walk above starts at 2, so
+        // non-classé is never rolled into "and up".
+        starsNc: byStar.get(0) || 0,
         starsAny: starsTotal,
         tags,
         price: {
