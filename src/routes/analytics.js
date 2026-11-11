@@ -70,8 +70,26 @@ function parseCookie(header, name) {
   return m ? m[1] : null;
 }
 
+// Cloudflare's location headers can carry non-ASCII place names ("Sétif",
+// "Béjaïa"). Depending on the path they arrive percent-encoded or as raw
+// UTF-8 bytes that Node reads as latin1 — normalise both to clean text.
+function cleanGeo(v, max = 80) {
+  if (!v || typeof v !== "string") return null;
+  let s = v.trim();
+  if (!s) return null;
+  if (/%[0-9A-F]{2}/i.test(s)) {
+    try { s = decodeURIComponent(s); } catch {}
+  } else if (/[\u0080-\u00ff]/.test(s)) {
+    const re = Buffer.from(s, "latin1").toString("utf8");
+    if (!re.includes("\ufffd")) s = re;
+  }
+  return s.slice(0, max);
+}
+
 // Headers we want to capture, normalized. Cloudflare adds CF-IPCountry when
-// the API is behind it; if absent (direct access), country falls back to null.
+// the API is behind it; region and city need the Managed Transform
+// "Add visitor location headers" turned on (Rules → Transform Rules →
+// Managed Transforms). Without it they are simply null.
 function captureHeaders(req) {
   return {
     ua: req.headers["user-agent"] || null,
@@ -79,7 +97,16 @@ function captureHeaders(req) {
     acceptLang: req.headers["accept-language"] || null,
     ip: req.headers["cf-connecting-ip"] || req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.ip || null,
     country: req.headers["cf-ipcountry"] || null,
+    region: cleanGeo(req.headers["cf-region"]),
+    regionCode: cleanGeo(req.headers["cf-region-code"], 10),
+    city: cleanGeo(req.headers["cf-ipcity"]),
   };
+}
+
+// The team's own admin work is not audience. Dropped at the door so it never
+// reaches the tables (the dashboard also filters older /admin rows out).
+function isAdminPath(p) {
+  return typeof p === "string" && /^\/admin(\/|\?|$)/.test(p);
 }
 
 // -----------------------------------------------------------------------------
@@ -110,6 +137,7 @@ router.post("/beacon", beaconLimiter, (req, res) => {
   res.status(204).end();
 
   if (!parsed.success) return;
+  if (isAdminPath(parsed.data.path)) return;
 
   const headers = captureHeaders(req);
   setImmediate(() => {
@@ -148,6 +176,7 @@ router.post("/event", beaconLimiter, (req, res) => {
   res.status(204).end();
 
   if (!parsed.success) return;
+  if (isAdminPath(parsed.data.path)) return;
 
   const headers = captureHeaders(req);
   setImmediate(() => {
