@@ -39,6 +39,11 @@ function parseRange(req) {
   return { start, end: clampedEnd };
 }
 
+// The team's own admin work is not audience. New /admin hits are dropped at
+// the beacon; these filters hide the ones recorded before that change.
+const NOT_ADMIN_PV = { NOT: { path: { startsWith: "/admin" } } };
+const NOT_ADMIN_SESS = { NOT: { entryPath: { startsWith: "/admin" } } };
+
 function dayCount(start, end) {
   return Math.ceil((end - start) / (24 * 60 * 60 * 1000));
 }
@@ -73,8 +78,8 @@ router.get("/overview", async (req, res, next) => {
 
 async function computeOverview(start, end) {
   // Filter out bot traffic from all human-facing numbers
-  const where = { createdAt: { gte: start, lte: end }, isBot: false };
-  const sessionWhere = { startedAt: { gte: start, lte: end }, isBot: false };
+  const where = { createdAt: { gte: start, lte: end }, isBot: false, ...NOT_ADMIN_PV };
+  const sessionWhere = { startedAt: { gte: start, lte: end }, isBot: false, ...NOT_ADMIN_SESS };
 
   const [pageviews, sessions, uniqueVisitorsRaw, bookings] = await Promise.all([
     prisma.pageview.count({ where }),
@@ -149,6 +154,7 @@ async function timeseriesFromRaw(start, end) {
       count(distinct "visitorId")::int AS "uniqueVisitors"
     FROM analytics_pageviews
     WHERE "createdAt" >= ${start} AND "createdAt" <= ${end} AND "isBot" = false
+      AND "path" NOT LIKE '/admin%'
     GROUP BY 1
     ORDER BY 1
   `;
@@ -179,7 +185,7 @@ router.get("/sources", async (req, res, next) => {
 
     const rows = await prisma.session.groupBy({
       by: ["referrerSrc"],
-      where: { startedAt: { gte: start, lte: end }, isBot: false },
+      where: { startedAt: { gte: start, lte: end }, isBot: false, ...NOT_ADMIN_SESS },
       _count: { _all: true },
       orderBy: { _count: { referrerSrc: "desc" } },
     });
@@ -206,7 +212,7 @@ router.get("/geo", async (req, res, next) => {
 
     const rows = await prisma.session.groupBy({
       by: ["country"],
-      where: { startedAt: { gte: start, lte: end }, isBot: false },
+      where: { startedAt: { gte: start, lte: end }, isBot: false, ...NOT_ADMIN_SESS },
       _count: { _all: true },
       orderBy: { _count: { country: "desc" } },
       take: 50,
@@ -224,6 +230,60 @@ router.get("/geo", async (req, res, next) => {
 });
 
 // -----------------------------------------------------------------------------
+// GET /api/admin/analytics/regions?country=DZ
+// -----------------------------------------------------------------------------
+// Sessions by region (wilaya for Algeria) and top cities inside one country.
+// Source: Cloudflare visitor location headers — IP-based, so approximate.
+// Algerian mobile carriers route much traffic via Algiers, which inflates it.
+// -----------------------------------------------------------------------------
+router.get("/regions", async (req, res, next) => {
+  try {
+    const { start, end } = parseRange(req);
+    const country = String(req.query.country || "DZ").toUpperCase().slice(0, 2);
+    const where = { startedAt: { gte: start, lte: end }, isBot: false, country, ...NOT_ADMIN_SESS };
+
+    const [byRegion, byCity, total] = await Promise.all([
+      prisma.session.groupBy({
+        by: ["regionCode", "region"],
+        where: { ...where, region: { not: null } },
+        _count: { _all: true },
+      }),
+      prisma.session.groupBy({
+        by: ["city", "regionCode"],
+        where: { ...where, city: { not: null } },
+        _count: { _all: true },
+      }),
+      prisma.session.count({ where }),
+    ]);
+
+    // One row per region code: Cloudflare can spell the same region two ways
+    // over time, so merge by code and keep the most frequent name.
+    const merged = new Map();
+    for (const r of byRegion) {
+      const key = r.regionCode || r.region;
+      const m = merged.get(key) || { code: r.regionCode || null, name: r.region, sessions: 0, best: 0 };
+      m.sessions += r._count._all;
+      if (r._count._all > m.best) { m.best = r._count._all; m.name = r.region; }
+      merged.set(key, m);
+    }
+    const located = [...merged.values()].reduce((a, r) => a + r.sessions, 0);
+    const data = [...merged.values()]
+      .sort((a, b) => b.sessions - a.sessions)
+      .map(({ code, name, sessions }) => ({
+        code, name, sessions,
+        percentage: located > 0 ? Number(((sessions / located) * 100).toFixed(1)) : 0,
+      }));
+
+    const cities = byCity
+      .map((r) => ({ city: r.city, code: r.regionCode || null, sessions: r._count._all }))
+      .sort((a, b) => b.sessions - a.sessions)
+      .slice(0, 12);
+
+    res.json({ country, data, cities, total, located, unknown: total - located });
+  } catch (err) { next(err); }
+});
+
+// -----------------------------------------------------------------------------
 // GET /api/admin/analytics/pages
 // -----------------------------------------------------------------------------
 // Top pages by pageview count.
@@ -234,7 +294,7 @@ router.get("/pages", async (req, res, next) => {
 
     const rows = await prisma.pageview.groupBy({
       by: ["path"],
-      where: { createdAt: { gte: start, lte: end }, isBot: false },
+      where: { createdAt: { gte: start, lte: end }, isBot: false, ...NOT_ADMIN_PV },
       _count: { _all: true },
       orderBy: { _count: { path: "desc" } },
       take: 25,
@@ -263,7 +323,7 @@ router.get("/events", async (req, res, next) => {
     if (type) {
       // Detail view — last 100 events of one type with meta
       const rows = await prisma.analyticsEvent.findMany({
-        where: { type, createdAt: { gte: start, lte: end } },
+        where: { type, createdAt: { gte: start, lte: end }, ...NOT_ADMIN_PV },
         orderBy: { createdAt: "desc" },
         take: 100,
         select: { id: true, type: true, path: true, meta: true, country: true, createdAt: true },
@@ -274,7 +334,7 @@ router.get("/events", async (req, res, next) => {
     // Summary view — counts per type
     const rows = await prisma.analyticsEvent.groupBy({
       by: ["type"],
-      where: { createdAt: { gte: start, lte: end } },
+      where: { createdAt: { gte: start, lte: end }, ...NOT_ADMIN_PV },
       _count: { _all: true },
       orderBy: { _count: { type: "desc" } },
     });
