@@ -47,7 +47,8 @@ function hashIp(ip) {
  * @param {string|null} payload.referrer document.referrer
  * @param {string|null} payload.lang   Browser language code
  * @param {boolean} payload.webdriver  navigator.webdriver
- * @param {object} headers             { ua, accept, acceptLang, ip, country }
+ * @param {object} headers             { ua, accept, acceptLang, ip, country,
+ *                                       region, regionCode, city }
  *                                     Filled by the route from req.headers.
  */
 async function ingestPageview(payload, headers) {
@@ -62,7 +63,10 @@ async function ingestPageview(payload, headers) {
       webdriver = false,
     } = payload || {};
 
-    const { ua = null, accept = null, acceptLang = null, ip = null, country = null } = headers || {};
+    const {
+      ua = null, accept = null, acceptLang = null, ip = null, country = null,
+      region = null, regionCode = null, city = null,
+    } = headers || {};
 
     if (!visitorId || !path) return;  // Drop malformed beacons silently
 
@@ -96,6 +100,9 @@ async function ingestPageview(payload, headers) {
           pageviewCount: { increment: 1 },
           // userId may have been null when session opened and now we know it
           ...(userId && !session.userId ? { userId } : {}),
+          // Backfill location on sessions opened before the Cloudflare
+          // headers were switched on.
+          ...(!session.region && region ? { region, regionCode, city } : {}),
         },
       });
     } else {
@@ -110,6 +117,9 @@ async function ingestPageview(payload, headers) {
           entryPath: path,
           exitPath: path,
           country,
+          region,
+          regionCode,
+          city,
           referrerSrc,
           deviceType,
           isBot: bot,
