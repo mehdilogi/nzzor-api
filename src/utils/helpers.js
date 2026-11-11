@@ -17,6 +17,18 @@ function localize(obj, field, lang = "en") {
     || "";
 }
 
+// A hotel with no contract (onlineBooking === false) is shown but booked over
+// WhatsApp. It must never carry the promises only a contracted hotel can keep:
+// instant confirmation and "verified partner" are forced off for it, whatever
+// the hotel row says.
+function trustFor(hotel) {
+  const contracted = hotel.onlineBooking !== false;
+  return {
+    instantConfirmation: contracted && Boolean(hotel.instantConfirmation),
+    verifiedPartner: contracted && Boolean(hotel.verifiedPartner),
+  };
+}
+
 function formatHotel(hotel, lang = "en") {
   const primaryPhoto = hotel.photos?.find(p => p.isPrimary) || hotel.photos?.[0];
 
@@ -42,10 +54,10 @@ function formatHotel(hotel, lang = "en") {
       petsAllowed: hotel.petsAllowed,
       parkingFree: hotel.parkingFree,
     },
-    trustSignals: {
-      instantConfirmation: hotel.instantConfirmation,
-      verifiedPartner: hotel.verifiedPartner,
-    },
+    trustSignals: trustFor(hotel),
+    // true = contract with Nzzor: online booking + SATIM payment.
+    // false = no contract: shown, but booked and paid over WhatsApp.
+    onlineBooking: hotel.onlineBooking !== false,
     isFeatured: hotel.isFeatured,
     tags: hotel.tags || [],
     priceFrom: hotel.rooms?.length
@@ -94,10 +106,8 @@ function formatHotelCard(hotel, lang = "en") {
     reviewCount: hotel.reviewCount,
     isFeatured: hotel.isFeatured,
     tags: hotel.tags || [],
-    trustSignals: {
-      instantConfirmation: hotel.instantConfirmation,
-      verifiedPartner: hotel.verifiedPartner,
-    },
+    trustSignals: trustFor(hotel),
+    onlineBooking: hotel.onlineBooking !== false,
     priceFrom: prices.length ? Math.min(...prices) : null,
     photos: (hotel.photos || []).map((p) => ({ id: p.id, url: p.url, isPrimary: p.isPrimary })),
     primaryPhoto: primary?.url || null,
