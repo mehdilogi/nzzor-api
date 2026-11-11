@@ -242,7 +242,7 @@ router.get("/regions", async (req, res, next) => {
     const country = String(req.query.country || "DZ").toUpperCase().slice(0, 2);
     const where = { startedAt: { gte: start, lte: end }, isBot: false, country, ...NOT_ADMIN_SESS };
 
-    const [byRegion, byCity, total] = await Promise.all([
+    const [byRegion, byCity, total, located] = await Promise.all([
       prisma.session.groupBy({
         by: ["regionCode", "region"],
         where: { ...where, region: { not: null } },
@@ -254,6 +254,16 @@ router.get("/regions", async (req, res, next) => {
         _count: { _all: true },
       }),
       prisma.session.count({ where }),
+      // Countries that have at least one located session in the range — the
+      // panel only offers those, so no button leads to an empty card.
+      prisma.session.groupBy({
+        by: ["country"],
+        where: {
+          startedAt: { gte: start, lte: end }, isBot: false, ...NOT_ADMIN_SESS,
+          region: { not: null }, country: { not: null },
+        },
+        _count: { _all: true },
+      }),
     ]);
 
     // One row per region code: Cloudflare can spell the same region two ways
@@ -266,12 +276,12 @@ router.get("/regions", async (req, res, next) => {
       if (r._count._all > m.best) { m.best = r._count._all; m.name = r.region; }
       merged.set(key, m);
     }
-    const located = [...merged.values()].reduce((a, r) => a + r.sessions, 0);
+    const locatedHere = [...merged.values()].reduce((a, r) => a + r.sessions, 0);
     const data = [...merged.values()]
       .sort((a, b) => b.sessions - a.sessions)
       .map(({ code, name, sessions }) => ({
         code, name, sessions,
-        percentage: located > 0 ? Number(((sessions / located) * 100).toFixed(1)) : 0,
+        percentage: locatedHere > 0 ? Number(((sessions / locatedHere) * 100).toFixed(1)) : 0,
       }));
 
     const cities = byCity
@@ -279,7 +289,11 @@ router.get("/regions", async (req, res, next) => {
       .sort((a, b) => b.sessions - a.sessions)
       .slice(0, 12);
 
-    res.json({ country, data, cities, total, located, unknown: total - located });
+    const countries = located
+      .map((r) => ({ country: r.country, sessions: r._count._all }))
+      .sort((a, b) => b.sessions - a.sessions);
+
+    res.json({ country, data, cities, total, located: locatedHere, unknown: total - locatedHere, countries });
   } catch (err) { next(err); }
 });
 
