@@ -622,6 +622,9 @@ model Session {
   entryPath      String                            // First page of the session
   exitPath       String?                           // Last page of the session
   country        String?                           // ISO from CF-IPCountry
+  region         String?                           // CF-Region, e.g. "Sétif" / "Île-de-France"
+  regionCode     String?                           // CF-Region-Code, ISO 3166-2 suffix (DZ: wilaya number)
+  city           String?                           // CF-IPCity — approximate, IP-based
   referrerSrc    String?                           // Classified source of the entry pageview
   deviceType     String?
   isBot          Boolean   @default(false)
@@ -631,6 +634,7 @@ model Session {
   @@index([visitorId, startedAt])
   @@index([startedAt])
   @@index([country])
+  @@index([country, regionCode])
   @@map("analytics_sessions")
 }
 
