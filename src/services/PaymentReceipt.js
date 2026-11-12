@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useLang } from "../lib/LangContext";
 
 // =============================================================================
 // PaymentReceipt — the return page SATIM grades
@@ -192,7 +193,31 @@ function fmtAmount(amount, lang) {
 }
 
 export default function PaymentReceipt({ status, reference, message, rejectionCode, lang, receipt }) {
-  const s = S[lang] || S.fr;
+  // `lang` is whatever the API put in the redirect, which is the language the
+  // booking was made in. That is the right language to arrive in, but it used
+  // to be the ONLY one: switching to Arabic in the nav flipped the header and
+  // left this card in French, because the page reads its language from the
+  // query string and a server component cannot see the client context.
+  //
+  // The context wins once mounted, so the switcher works. Deferring to an
+  // effect rather than reading it during render keeps the first paint
+  // identical to the server's and avoids a hydration mismatch.
+  const { lang: ctxLang } = useLang();
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  const view = (mounted && ctxLang) || lang || "fr";
+
+  // Keep the URL honest, so a refresh or a shared link stays in the language
+  // being read. replaceState rather than a router push: this must not add a
+  // history entry between the payment and the confirmation.
+  useEffect(() => {
+    if (!mounted || view === lang) return;
+    const url = new URL(window.location.href);
+    url.searchParams.set("lang", view);
+    window.history.replaceState(null, "", url.toString());
+  }, [mounted, view, lang]);
+
+  const s = S[view] || S.fr;
   const outcome = OUTCOMES[status] || OUTCOMES.unknown;
 
   const [emailOpen, setEmailOpen] = useState(false);
@@ -221,7 +246,7 @@ export default function PaymentReceipt({ status, reference, message, rejectionCo
       const res = await fetch(`${base}/api/payments/satim/receipt/${reference}/email`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ to: address, lang }),
+        body: JSON.stringify({ to: address, lang: view }),
       });
       setSendState(res.ok ? "sent" : "error");
     } catch {
@@ -265,10 +290,10 @@ export default function PaymentReceipt({ status, reference, message, rejectionCo
               {row(s.order_id, receipt.orderId)}
               {row(s.order_number, receipt.orderNumber)}
               {row(s.approval, receipt.approvalCode)}
-              {row(s.datetime, fmtDateTime(receipt.transactionAt, lang))}
+              {row(s.datetime, fmtDateTime(receipt.transactionAt, view))}
               {row(
                 s.amount,
-                <strong>{fmtAmount(receipt.amount, lang)} {receipt.currency || "DZD"}</strong>
+                <strong>{fmtAmount(receipt.amount, view)} {receipt.currency || "DZD"}</strong>
               )}
               {row(s.method, receipt.method)}
               {/* The masked card number is deliberately NOT shown.
@@ -287,7 +312,7 @@ export default function PaymentReceipt({ status, reference, message, rejectionCo
                     we email, and does not depend on their print settings. */}
                 <a
                   className="rcpt-btn"
-                  href={`${process.env.NEXT_PUBLIC_API_URL || ""}/api/payments/satim/receipt/${reference}/pdf?lang=${lang}`}
+                  href={`${process.env.NEXT_PUBLIC_API_URL || ""}/api/payments/satim/receipt/${reference}/pdf?lang=${view}`}
                 >
                   {s.download}
                 </a>
@@ -324,9 +349,14 @@ export default function PaymentReceipt({ status, reference, message, rejectionCo
           <div className="rcpt-help">{s.helpline}</div>
 
           <div className="rcpt-cta no-print">
-            {status === "failed" && <a className="primary" href="/hotels">{s.try_again}</a>}
+            {/* Retries the SAME booking. It used to send the customer back to
+                the hotel list, which meant re-entering everything — most of
+                them simply left. */}
+            {status === "failed" && reference && (
+              <a className="primary" href={`/pay/${encodeURIComponent(reference)}?lang=${view}`}>{s.try_again}</a>
+            )}
             {status === "pending" && reference && (
-              <a className="primary" href={`/booking/result?ref=${reference}&status=pending&lang=${lang}`}>
+              <a className="primary" href={`/booking/result?ref=${reference}&status=pending&lang=${view}`}>
                 {s.refresh}
               </a>
             )}

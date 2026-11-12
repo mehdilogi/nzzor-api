@@ -643,7 +643,137 @@ async function sendHotelNotification(raw) {
   }
 }
 
+// =============================================================================
+// Payment recovery — "your payment didn't go through, finish it here"
+// -----------------------------------------------------------------------------
+// Sent once, on a booking's first failed card attempt (see paymentService).
+// Most failures are not refusals: the customer did not have the card at hand,
+// the SMS code did not arrive, the session timed out. A link that reopens the
+// SAME booking recovers them without a call.
+// =============================================================================
+const RECOVERY_COPY = {
+  fr: {
+    subject: (ref) => `Finalisez votre réservation · ${ref}`,
+    preheader: "Votre paiement n'a pas abouti. Aucun montant n'a été débité.",
+    hello: (n) => `Bonjour${n ? " " + n : ""},`,
+    body: "Le paiement de votre réservation n'a pas abouti et aucun montant n'a été débité de votre carte. Votre réservation est enregistrée : vous pouvez finaliser le paiement en un clic, avec la même carte ou une autre.",
+    hotel: "Hôtel", arrival: "Arrivée", departure: "Départ", nights: "Nuits", total: "Total", ref: "Référence",
+    button: "Finaliser mon paiement",
+    hold: "La chambre n'est garantie qu'une fois le paiement validé.",
+    tip: "Paiement bloqué ? Votre carte CIB ou EDAHABIA doit être activée pour le paiement en ligne (auprès de votre banque ou d'Algérie Poste), et gardez votre téléphone à portée de main pour le code SMS.",
+    help: "Besoin d'aide ? Répondez à cet e-mail ou appelez-nous au 0770 08 08 30.",
+    signature: "L'équipe Nzzor",
+  },
+  en: {
+    subject: (ref) => `Complete your booking · ${ref}`,
+    preheader: "Your payment did not go through. Your card was not charged.",
+    hello: (n) => `Hello${n ? " " + n : ""},`,
+    body: "The payment for your booking did not go through and your card was not charged. Your booking is saved: you can complete the payment in one click, with the same card or another one.",
+    hotel: "Hotel", arrival: "Check-in", departure: "Check-out", nights: "Nights", total: "Total", ref: "Reference",
+    button: "Complete my payment",
+    hold: "The room is only guaranteed once the payment goes through.",
+    tip: "Payment blocked? Your CIB or EDAHABIA card must be enabled for online payment (at your bank or Algérie Poste), and keep your phone nearby for the SMS code.",
+    help: "Need help? Reply to this email or call us on 0770 08 08 30.",
+    signature: "The Nzzor team",
+  },
+  ar: {
+    subject: (ref) => `أكملوا حجزكم · ${ref}`,
+    preheader: "لم تكتمل عملية الدفع، ولم يُقتطع أي مبلغ من بطاقتكم.",
+    hello: (n) => `مرحباً${n ? " " + n : ""}،`,
+    body: "لم تكتمل عملية الدفع الخاصة بحجزكم، ولم يُقتطع أي مبلغ من بطاقتكم. حجزكم مسجّل لدينا، ويمكنكم إتمام الدفع بنقرة واحدة، بنفس البطاقة أو ببطاقة أخرى.",
+    hotel: "الفندق", arrival: "الوصول", departure: "المغادرة", nights: "الليالي", total: "المبلغ الإجمالي", ref: "رقم الحجز",
+    button: "إتمام الدفع",
+    hold: "لا تُضمن الغرفة إلا بعد تأكيد الدفع.",
+    tip: "تعذّر الدفع؟ يجب أن تكون بطاقة CIB أو الذهبية مفعّلة للدفع عبر الإنترنت (لدى بنككم أو بريد الجزائر)، واحتفظوا بهاتفكم بالقرب منكم لاستلام رمز SMS.",
+    help: "تحتاجون مساعدة؟ ردّوا على هذا البريد أو اتصلوا بنا على 0770 08 08 30.",
+    signature: "فريق نزور",
+  },
+};
+
+async function sendPaymentRecovery(b, lang = "fr") {
+  const L = RECOVERY_COPY[lang] ? lang : "fr";
+  const c = RECOVERY_COPY[L];
+  const rtl = L === "ar";
+  const to = b.guestEmail;
+  if (!resend) {
+    console.log(`[emailService] (disabled) would send payment recovery for ${b.reference} to ${to}`);
+    return null;
+  }
+  const h = b.hotel || {};
+  const hotelName = (L === "ar" && h.nameAr) || (L === "en" && h.nameEn) || h.nameFr || h.nameEn || h.nameAr || "";
+  const url = `${webBaseUrl}/pay/${encodeURIComponent(b.reference)}?lang=${L}`;
+  const date = (d) => formatDate(d, L);
+  const amount = `${new Intl.NumberFormat("fr-FR").format(Number(b.total) || 0).replace(/[\u202f\u00a0]/g, " ")} ${L === "ar" ? "دج" : "DA"}`;
+  const align = rtl ? "right" : "left";
+  const row = (k, v) =>
+    `<tr><td style="padding:7px 0;color:#77777f;text-align:${align}">${esc(k)}</td><td style="padding:7px 0;font-weight:700;text-align:${rtl ? "left" : "right"}">${v}</td></tr>`;
+
+  const html = `<!doctype html><html lang="${L}" dir="${rtl ? "rtl" : "ltr"}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${esc(c.subject(b.reference))}</title></head>
+<body style="margin:0;padding:0;background:#FAF8F4;font-family:'Helvetica Neue',Arial,Tahoma,sans-serif;color:#16161A">
+<span style="display:none;visibility:hidden;opacity:0;height:0;width:0;overflow:hidden">${esc(c.preheader)}</span>
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#FAF8F4"><tr><td align="center" style="padding:32px 16px">
+<table role="presentation" width="560" cellspacing="0" cellpadding="0" border="0" dir="${rtl ? "rtl" : "ltr"}" style="max-width:560px;background:#fff;border-radius:16px;border:1px solid #ececec;text-align:${align}">
+<tr><td style="padding:28px 36px 14px;border-bottom:1px solid #f0f0f0;font-size:13px;font-weight:700;letter-spacing:.08em;text-transform:uppercase">
+<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#E63946;vertical-align:middle;margin-${rtl ? "left" : "right"}:10px"></span>Nzzor</td></tr>
+<tr><td style="padding:28px 36px 6px">
+<p style="margin:0 0 14px;font-size:16px;font-weight:600">${esc(c.hello(b.guestFirstName))}</p>
+<p style="margin:0 0 22px;font-size:15px;line-height:1.75;color:#3a3a40">${esc(c.body)}</p>
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="font-size:14px;border-top:1px solid #f0f0f0;border-bottom:1px solid #f0f0f0;margin-bottom:24px">
+${row(c.ref, `<span dir="ltr">${esc(b.reference)}</span>`)}
+${hotelName ? row(c.hotel, esc(hotelName)) : ""}
+${row(c.arrival, esc(date(b.checkIn)))}
+${row(c.departure, esc(date(b.checkOut)))}
+${row(c.nights, esc(b.nights))}
+${row(c.total, esc(amount))}
+</table>
+<table role="presentation" cellspacing="0" cellpadding="0" border="0" align="${rtl ? "right" : "left"}"><tr><td style="border-radius:980px;background:#16161A">
+<a href="${url}" style="display:inline-block;padding:14px 30px;font-size:15px;font-weight:700;color:#fff;text-decoration:none;border-radius:980px">${esc(c.button)}</a>
+</td></tr></table>
+<div style="clear:both"></div>
+<p style="margin:18px 0 0;font-size:13px;color:#B4801A;font-weight:600">${esc(c.hold)}</p>
+<p style="margin:18px 0 0;font-size:13px;line-height:1.7;color:#77777f">${esc(c.tip)}</p>
+<p style="margin:12px 0 0;font-size:13px;line-height:1.7;color:#77777f">${esc(c.help).replace("0770 08 08 30", '<span dir="ltr" style="unicode-bidi:embed;white-space:nowrap">0770 08 08 30</span>')}</p>
+</td></tr>
+<tr><td style="padding:22px 36px 28px;color:#8a8a90;font-size:12.5px">— ${esc(c.signature)}</td></tr>
+</table>
+<p style="margin:16px 0 0;font-size:11.5px;color:#a3a3a8">nzzor.com · Allouni Travel Agency</p>
+</td></tr></table></body></html>`;
+
+  const text = [
+    c.hello(b.guestFirstName), "", c.body, "",
+    `${c.ref}: ${b.reference}`,
+    hotelName ? `${c.hotel}: ${hotelName}` : "",
+    `${c.arrival}: ${date(b.checkIn)}`,
+    `${c.departure}: ${date(b.checkOut)}`,
+    `${c.total}: ${amount}`, "",
+    `${c.button}: ${url}`, "", c.hold, c.tip, c.help, "", `— ${c.signature}`,
+  ].filter((l) => l !== null).join("\n");
+
+  try {
+    const result = await resend.emails.send({
+      from: fromAddress,
+      to: [to],
+      bcc: [AGENCY_EMAIL],
+      subject: c.subject(b.reference),
+      html,
+      text,
+      replyTo: "bookings@nzzor.com",
+      tags: [{ name: "category", value: "payment_recovery" }, { name: "lang", value: L }],
+    });
+    if (result.error) {
+      console.error(`[emailService] Resend error for recovery ${b.reference}:`, result.error);
+      return null;
+    }
+    console.log(`[emailService] sent payment recovery for ${b.reference} → ${to} (id: ${result.data?.id})`);
+    return result.data?.id || null;
+  } catch (err) {
+    console.error(`[emailService] failed to send recovery for ${b.reference}:`, err);
+    return null;
+  }
+}
+
 module.exports = {
+  sendPaymentRecovery,
   sendHotelNotification,
   sendPaymentReceipt,
   sendBookingCreated,
