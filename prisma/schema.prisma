@@ -679,3 +679,34 @@ model DailyStats {
 
   @@map("analytics_daily_stats")
 }
+
+// Group requests — 10+ travellers. Never booked online: the agency gets the
+// hotel's group rate, adds its margin and sends a quote. One row per request,
+// moving NEW → QUOTED → WON | LOST.
+model GroupRequest {
+  id           String    @id @default(uuid())
+  reference    String    @unique                 // GRP-XXXXXX, shown to the customer
+  groupType    String                            // COMPANY | WEDDING | SPORTS | SCHOOL | ASSOCIATION | OTHER
+  destination  String?                           // wilaya key, or null = to be defined
+  checkIn      DateTime? @db.Date
+  checkOut     DateTime? @db.Date
+  people       Int
+  rooms        Int?
+  budget       String?                           // per room per night bracket
+  organization String?
+  contactName  String
+  phone        String
+  email        String?
+  message      String?   @db.Text
+  lang         String    @default("fr")
+  status       String    @default("NEW")         // NEW | QUOTED | WON | LOST
+  quoteAmount  Int?                              // DA, total quoted
+  adminNotes   String?   @db.Text
+  country      String?
+  region       String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([status, createdAt])
+  @@map("group_requests")
+}
