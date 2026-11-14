@@ -22,6 +22,8 @@ const accountRoutes = require("./routes/account");
 const paymentRoutes = require("./routes/payments");
 const analyticsRoutes = require("./routes/analytics");
 const adminAnalyticsRoutes = require("./routes/adminAnalytics");
+const groupRoutes = require("./routes/groups");
+const adminGroupRoutes = require("./routes/adminGroups");
 const { errorHandler } = require("./middleware/errorHandler");
 
 const app = express();
@@ -199,6 +201,9 @@ app.use("/api/account", accountRoutes);
 // requireAdmin), matching the existing /api/admin convention).
 app.use("/api/analytics", analyticsRoutes);
 app.use("/api/admin/analytics", adminAnalyticsRoutes);
+// Group requests (10+ travellers): public intake + admin pipeline.
+app.use("/api/groups", groupRoutes);
+app.use("/api/admin/groups", adminGroupRoutes);
 
 app.get("/api/health", (req, res) => {
   res.json({
