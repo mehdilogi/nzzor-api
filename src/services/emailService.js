@@ -772,7 +772,87 @@ ${row(c.total, esc(amount))}
   }
 }
 
+// =============================================================================
+// Group request — internal alert to the agency
+// -----------------------------------------------------------------------------
+// French, like the hotel notification. Reply-To is the customer when they left
+// an email, so answering the alert answers the customer.
+// =============================================================================
+const GROUP_TYPE_FR = {
+  COMPANY: "Entreprise / séminaire", WEDDING: "Mariage / fête familiale", SPORTS: "Équipe sportive",
+  SCHOOL: "École / université", ASSOCIATION: "Association / club", OTHER: "Autre",
+};
+
+function waLink(phone) {
+  let d = String(phone || "").replace(/\D/g, "");
+  if (d.startsWith("00")) d = d.slice(2);
+  if (d.startsWith("0")) d = "213" + d.slice(1);
+  return d ? `https://wa.me/${d}` : null;
+}
+
+async function sendGroupRequest(g) {
+  if (!resend) {
+    console.log(`[emailService] (disabled) would send group request ${g.reference} to ${AGENCY_EMAIL}`);
+    return null;
+  }
+  const dates = g.checkIn
+    ? `${dateFr(g.checkIn)}${g.checkOut ? " → " + dateFr(g.checkOut) : ""}`
+    : "À définir";
+  const wa = waLink(g.phone);
+  const row = (label, value) =>
+    `<tr><td style="padding:7px 0;color:#777;width:170px;vertical-align:top">${esc(label)}</td><td style="padding:7px 0;font-weight:600">${value}</td></tr>`;
+  const html = `<!doctype html><html lang="fr"><body style="margin:0;background:#f5f3ef;font-family:Arial,Helvetica,sans-serif;color:#16161a">
+<div style="max-width:600px;margin:0 auto;padding:28px 16px"><div style="background:#fff;border-radius:14px;padding:28px">
+<div style="font-size:12px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:#E63946">Nouvelle demande de groupe</div>
+<h1 style="font-size:24px;margin:10px 0 4px">${esc(g.reference)}</h1>
+<div style="color:#555;margin-bottom:20px">${esc(g.people)} personnes${g.rooms ? " · " + esc(g.rooms) + " chambres" : ""} · ${esc(GROUP_TYPE_FR[g.groupType] || g.groupType)}</div>
+<table style="width:100%;border-collapse:collapse;font-size:14px">
+${row("Destination", esc(g.destination || "À définir"))}
+${row("Dates", esc(dates))}
+${row("Budget / chambre / nuit", esc(g.budget || "Non précisé"))}
+${g.organization ? row("Organisme", esc(g.organization)) : ""}
+${row("Contact", esc(g.contactName))}
+${row("Téléphone", `${esc(g.phone)}${wa ? ` · <a href="${wa}" style="color:#1B8A5A">WhatsApp</a>` : ""}`)}
+${g.email ? row("E-mail", esc(g.email)) : ""}
+${g.message ? row("Message", esc(g.message).replace(/\n/g, "<br>")) : ""}
+${row("Langue", esc(g.lang))}
+${g.country ? row("Origine", esc([g.region, g.country].filter(Boolean).join(", "))) : ""}
+</table>
+<p style="font-size:13px;color:#777;line-height:1.6;margin:22px 0 0">Suivi et devis : Admin → Groups.</p>
+</div></div></body></html>`;
+  const text = [
+    `Nouvelle demande de groupe — ${g.reference}`,
+    `${g.people} personnes${g.rooms ? " · " + g.rooms + " chambres" : ""} · ${GROUP_TYPE_FR[g.groupType] || g.groupType}`,
+    `Destination : ${g.destination || "À définir"} · Dates : ${dates}`,
+    `Budget : ${g.budget || "Non précisé"}`,
+    `Contact : ${g.contactName} · ${g.phone}${g.email ? " · " + g.email : ""}`,
+    g.organization ? `Organisme : ${g.organization}` : "",
+    g.message ? `Message : ${g.message}` : "",
+  ].filter(Boolean).join("\n");
+  try {
+    const result = await resend.emails.send({
+      from: fromAddress,
+      to: [AGENCY_EMAIL],
+      subject: `Groupe ${g.reference} · ${g.people} pers. · ${g.destination || "destination à définir"}`,
+      html,
+      text,
+      ...(g.email ? { replyTo: g.email } : { replyTo: "bookings@nzzor.com" }),
+      tags: [{ name: "category", value: "group_request" }],
+    });
+    if (result.error) {
+      console.error(`[emailService] Resend error for group ${g.reference}:`, result.error);
+      return null;
+    }
+    console.log(`[emailService] sent group request ${g.reference} → ${AGENCY_EMAIL} (id: ${result.data?.id})`);
+    return result.data?.id || null;
+  } catch (err) {
+    console.error(`[emailService] failed to send group request ${g.reference}:`, err);
+    return null;
+  }
+}
+
 module.exports = {
+  sendGroupRequest,
   sendPaymentRecovery,
   sendHotelNotification,
   sendPaymentReceipt,
