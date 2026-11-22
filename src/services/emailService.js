@@ -851,15 +851,32 @@ ${g.country ? row("Origine", esc([g.region, g.country].filter(Boolean).join(", "
   }
 }
 
+// ---- Phone notifications ---------------------------------------------------
+// The moments that send these emails also notify the admins' phones (see
+// pushService). The push goes out first and on its own, so a failed email
+// never stops it, and a failed push never touches the email.
+function alsoPush(fn, notify) {
+  return function (...a) {
+    setImmediate(() => {
+      try {
+        notify(require("./pushService"), a);
+      } catch (err) {
+        console.error("[emailService] push hook failed:", err.message);
+      }
+    });
+    return fn.apply(this, a);
+  };
+}
+
 module.exports = {
-  sendGroupRequest,
-  sendPaymentRecovery,
-  sendHotelNotification,
+  sendGroupRequest: alsoPush(sendGroupRequest, (push, a) => push.notifyGroup(a[0])),
+  sendPaymentRecovery: alsoPush(sendPaymentRecovery, (push, a) => push.notifyBooking("payment_failed", a[0] && a[0].reference)),
+  sendHotelNotification: alsoPush(sendHotelNotification, (push, a) => push.notifyBooking("confirmed", a[0] && a[0].reference)),
   sendPaymentReceipt,
-  sendBookingCreated,
+  sendBookingCreated: alsoPush(sendBookingCreated, (push, a) => push.notifyBooking("created", a[0] && a[0].reference)),
   sendBookingConfirmed,
   sendBookingPaid,
   sendBookingRejected,
-  sendBookingCancelled,
+  sendBookingCancelled: alsoPush(sendBookingCancelled, (push, a) => push.notifyBooking("cancelled", a[0] && a[0].reference)),
   sendPasswordResetEmail,
 };
