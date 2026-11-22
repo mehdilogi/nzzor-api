@@ -24,6 +24,7 @@ const analyticsRoutes = require("./routes/analytics");
 const adminAnalyticsRoutes = require("./routes/adminAnalytics");
 const groupRoutes = require("./routes/groups");
 const adminGroupRoutes = require("./routes/adminGroups");
+const adminPushRoutes = require("./routes/adminPush");
 const { errorHandler } = require("./middleware/errorHandler");
 
 const app = express();
@@ -204,6 +205,8 @@ app.use("/api/admin/analytics", adminAnalyticsRoutes);
 // Group requests (10+ travellers): public intake + admin pipeline.
 app.use("/api/groups", groupRoutes);
 app.use("/api/admin/groups", adminGroupRoutes);
+// Phone notifications for the admins (Web Push).
+app.use("/api/admin/push", adminPushRoutes);
 
 app.get("/api/health", (req, res) => {
   res.json({
