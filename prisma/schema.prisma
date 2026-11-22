@@ -712,3 +712,29 @@ model GroupRequest {
   @@index([status, createdAt])
   @@map("group_requests")
 }
+
+// =============================================================================
+// PHONE NOTIFICATIONS (Web Push)
+// =============================================================================
+// One row per phone / browser that turned on notifications in /admin.
+model PushSubscription {
+  id            String    @id @default(uuid())
+  endpoint      String    @unique
+  p256dh        String
+  auth          String
+  userId        String?
+  userAgent     String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@map("push_subscriptions")
+}
+
+// Small key/value store for server settings (the Web Push key pair).
+model AppSetting {
+  key           String    @id
+  value         String    @db.Text
+  updatedAt     DateTime  @updatedAt
+
+  @@map("app_settings")
+}
