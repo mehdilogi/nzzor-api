@@ -1,6 +1,7 @@
 const router = require("express").Router();
 const prisma = require("../utils/prisma");
 const { formatHotel, formatHotelCard, paginate } = require("../utils/helpers");
+const { WILAYAS, resolveWilaya } = require("../utils/wilayas");
 
 const HOTEL_INCLUDE = {
   rooms: { where: { isActive: true }, orderBy: { sortOrder: "asc" }, include: { photos: true } },
@@ -300,30 +301,53 @@ router.get("/meta/facets", async (req, res, next) => {
 });
 
 // GET /api/hotels/meta/cities
+// One entry per town that has an active hotel. Each entry carries its wilaya
+// code, and `wilayaCount` counts DISTINCT wilayas: several towns of the same
+// wilaya (Béjaïa and Tichy) count once.
 router.get("/meta/cities", async (req, res, next) => {
   try {
     const lang = req.query.lang || "en";
     const cities = await prisma.hotel.groupBy({
-      by: ["city", "cityEn", "cityFr", "cityAr"],
+      by: ["city", "cityEn", "cityFr", "cityAr", "wilaya", "regionEn", "regionFr", "regionAr"],
       where: { isActive: true },
       _count: { id: true },
     });
-    // All three names, not just the requested one. The listing is server
-    // rendered but the language lives in client state, so the server cannot
-    // know which to send — the client picks. `name` stays the lang-specific
-    // value for existing callers, and is what the filter matches on, so it
-    // must keep being requested as English by the listing page.
-    res.json({
-      data: cities.map(c => ({
+    // The extra group-by fields can split one town into two rows (one hotel
+    // with its wilaya set, one without): merge them back by town key.
+    const byKey = new Map();
+    for (const c of cities) {
+      const wilaya = resolveWilaya(c);
+      const prev = byKey.get(c.city);
+      if (prev) {
+        prev.hotelCount += c._count.id;
+        if (!prev.wilaya && wilaya) prev.wilaya = wilaya;
+        continue;
+      }
+      byKey.set(c.city, {
         key: c.city,
+        // All three names, not just the requested one. The listing is server
+        // rendered but the language lives in client state, so the server
+        // cannot know which to send — the client picks. `name` stays the
+        // lang-specific value for existing callers, and is what the filter
+        // matches on, so it must keep being requested as English by the
+        // listing page.
         name: c[`city${lang.charAt(0).toUpperCase() + lang.slice(1)}`] || c.cityEn,
         nameEn: c.cityEn,
         nameFr: c.cityFr || c.cityEn,
         nameAr: c.cityAr || c.cityEn,
+        wilaya,
         hotelCount: c._count.id,
-      })),
-    });
+      });
+    }
+    const data = [...byKey.values()];
+    const wilayaCount = new Set(data.map((c) => c.wilaya).filter(Boolean)).size;
+    res.json({ data, wilayaCount });
   } catch (err) { next(err); }
+});
+
+// GET /api/hotels/meta/wilayas — the 69 wilayas (code, fr, en, ar)
+router.get("/meta/wilayas", (req, res) => {
+  res.json({ data: WILAYAS });
 });
 
 // GET /api/hotels/meta/tags — the canonical tag dictionary

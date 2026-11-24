@@ -11,6 +11,7 @@ const prisma = require("../utils/prisma");
 const { requireAuth, requireAdmin } = require("../middleware/auth");
 const { formatHotel } = require("../utils/helpers");
 const { TAG_KEYS } = require("../utils/tags");
+const { resolveWilaya, isWilayaCode } = require("../utils/wilayas");
 const { uploadHotelPhoto, uploadRoomPhoto, deleteHotelPhoto, deletePhotoByUrl, isR2Configured } = require("../utils/r2");
 
 // In-memory upload — files are streamed straight to R2, never touch disk.
@@ -78,6 +79,10 @@ const hotelSchema = z.object({
   regionEn: z.string().default("").transform(toTitle),
   regionFr: z.string().default("").transform(toTitle),
   regionAr: z.string().default("").transform(trimOnly),
+  // Wilaya code "01"–"69". The town above can be any town; this is the
+  // wilaya it belongs to, and what the homepage counts. Left empty, it is
+  // worked out from the town / region names on save.
+  wilaya: z.string().refine(isWilayaCode, "Unknown wilaya").nullable().optional(),
   address: z.string().optional(),
   // .nullable() so the admin can CLEAR a pin (web sends null) — not just .optional(),
   // which would reject null. Range bounds reject garbage (a longitude of 500, etc.).
@@ -111,7 +116,9 @@ router.get("/hotels", async (req, res, next) => {
       include: HOTEL_INCLUDE,
       orderBy: [{ isActive: "desc" }, { sortOrder: "asc" }, { createdAt: "desc" }],
     });
-    res.json({ data: hotels.map((h) => formatHotel(h, req.query.lang || "en")) });
+    // `wilaya`: saved code, or the one the names point to; null means the
+    // admin must pick it (the hotel is left out of the wilaya count).
+    res.json({ data: hotels.map((h) => ({ ...formatHotel(h, req.query.lang || "en"), wilaya: resolveWilaya(h) })) });
   } catch (err) { next(err); }
 });
 
@@ -143,7 +150,9 @@ router.get("/hotels/:id", async (req, res, next) => {
       include,
     });
     if (!hotel) return res.status(404).json({ error: "Hotel not found" });
-    res.json({ data: hotel });
+    // The admin's wilaya dropdown starts on the saved code, or on the one
+    // the names point to for hotels saved before the field existed.
+    res.json({ data: { ...hotel, wilayaSuggested: hotel.wilaya || resolveWilaya(hotel) } });
   } catch (err) { next(err); }
 });
 
@@ -151,6 +160,7 @@ router.get("/hotels/:id", async (req, res, next) => {
 router.post("/hotels", async (req, res, next) => {
   try {
     const data = hotelSchema.parse(req.body);
+    if (!data.wilaya) data.wilaya = resolveWilaya(data);
     let slug = slugify(data.nameEn);
     // ensure unique slug
     let n = 1;
@@ -175,6 +185,15 @@ router.put("/hotels/:id", async (req, res, next) => {
   try {
     const data = hotelSchema.partial().parse(req.body);
     if (data.contactEmail === "") data.contactEmail = null;
+    if (!data.wilaya) {
+      // Not chosen in the form: keep the saved one, or work it out from the
+      // names (the new ones if this update changes them).
+      const current = await prisma.hotel.findUnique({ where: { id: req.params.id } });
+      if (!current) return res.status(404).json({ error: "Hotel not found" });
+      const guess = current.wilaya || resolveWilaya({ ...current, ...data, wilaya: null });
+      if (guess) data.wilaya = guess;
+      else delete data.wilaya;
+    }
     const hotel = await prisma.hotel.update({
       where: { id: req.params.id },
       data,
