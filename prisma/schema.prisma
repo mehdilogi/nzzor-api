@@ -126,6 +126,7 @@ model Hotel {
   regionEn    String
   regionFr    String
   regionAr    String
+  wilaya      String? // Wilaya code "01"–"69" (src/utils/wilayas.js); city is the town
   address     String?
   latitude    Float?
   longitude   Float?
@@ -181,6 +182,7 @@ model Hotel {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
+  @@index([wilaya])
   @@index([city])
   @@index([stars])
   @@index([isActive, isFeatured])
