@@ -3,6 +3,23 @@ const prisma = require("../utils/prisma");
 const { formatHotel, formatHotelCard, paginate } = require("../utils/helpers");
 const { WILAYAS, resolveWilaya } = require("../utils/wilayas");
 
+// Whether a hotel page has enough of its own content to be worth showing to
+// Google: at least one photo, and a real description or a price. Pages with
+// only a name and a town are near-identical across hundreds of hotels; Google
+// indexes few of them and rates the whole site lower for it. The website marks
+// the others "noindex" and leaves them out of the sitemap until they are
+// filled in — they stay visible and bookable for visitors.
+function isIndexable(h) {
+  const desc = Math.max(
+    String(h.descFr || "").trim().length,
+    String(h.descEn || "").trim().length,
+    String(h.descAr || "").trim().length,
+  );
+  const hasPhoto = Array.isArray(h.photos) && h.photos.length > 0;
+  const hasPrice = Array.isArray(h.rooms) && h.rooms.some((r) => Number(r.basePrice) > 0);
+  return hasPhoto && (desc >= 120 || hasPrice);
+}
+
 const HOTEL_INCLUDE = {
   rooms: { where: { isActive: true }, orderBy: { sortOrder: "asc" }, include: { photos: true } },
   photos: { orderBy: { sortOrder: "asc" } },
@@ -154,6 +171,7 @@ router.get("/", async (req, res, next) => {
       const all = await prisma.hotel.findMany({
         where,
         select: { id: true, onlineBooking: true, rooms: { where: { isActive: true }, select: { basePrice: true } } },
+        orderBy: { id: "asc" }, // fixed order for equal prices, so pages never overlap
       });
       // Contracted hotels (bookable online) first, then the WhatsApp-only
       // ones, then hotels with no price at all.
@@ -166,7 +184,7 @@ router.get("/", async (req, res, next) => {
         else if (h.onlineBooking === false) pricedWa.push({ id: h.id, p: Math.min(...prices) });
         else priced.push({ id: h.id, p: Math.min(...prices) });
       }
-      const cmp = (a, b) => (asc ? a.p - b.p : b.p - a.p);
+      const cmp = (a, b) => (asc ? a.p - b.p : b.p - a.p) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
       priced.sort(cmp);
       pricedWa.sort(cmp);
       const ordered = priced.concat(pricedWa, unpriced);
@@ -186,6 +204,12 @@ router.get("/", async (req, res, next) => {
         case "stars": orderBy = [{ onlineBooking: "desc" }, { stars: "desc" }]; break;
         default: orderBy = [{ onlineBooking: "desc" }, { isFeatured: "desc" }, { reviewCount: "desc" }];
       }
+      // Always end on a unique column. Many hotels tie on the fields above,
+      // and Postgres returns ties in any order it likes from one query to the
+      // next — so page 2 repeated hotels from page 1 and some hotels were on
+      // no page at all (602 hotels, 588 reachable: 14 missing from the
+      // listing and from the sitemap).
+      orderBy.push({ id: "asc" });
       [hotels, total] = await Promise.all([
         prisma.hotel.findMany({ where, include: LIST_INCLUDE, orderBy, skip, take }),
         prisma.hotel.count({ where }),
@@ -193,7 +217,7 @@ router.get("/", async (req, res, next) => {
     }
 
     res.json({
-      data: hotels.map(h => formatHotelCard(h, lang)),
+      data: hotels.map((h) => ({ ...formatHotelCard(h, lang), indexable: isIndexable(h), updatedAt: h.updatedAt })),
       pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
     });
   } catch (err) { next(err); }
@@ -371,7 +395,7 @@ router.get("/:slug", async (req, res, next) => {
     if (!hotel || !hotel.isActive) {
       return res.status(404).json({ error: "Hotel not found" });
     }
-    res.json({ data: formatHotel(hotel, lang) });
+    res.json({ data: { ...formatHotel(hotel, lang), indexable: isIndexable(hotel), updatedAt: hotel.updatedAt } });
   } catch (err) { next(err); }
 });
 
